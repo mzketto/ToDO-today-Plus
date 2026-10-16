@@ -2375,7 +2375,12 @@
       title.className = 'param-title';
       title.appendChild(document.createTextNode(meta.label || id));
       const badge = document.createElement('span');
-      const saved = meta.fields?.some((f) => params[id]?.[`has_${f.key}`]);
+      // 密钥字段只回传 has_xxx 标志（值被服务端抹掉）；普通字段直接看值是否非空。
+      // 只要任一字段填了就算「已配置」——像 Webhook 把 token 写进模板、请求头留空也算。
+      const saved = meta.fields?.some((f) => {
+        const v = params[id]?.[f.secret ? `has_${f.key}` : f.key];
+        return f.secret ? !!v : !!(v && String(v).trim());
+      });
       badge.className = `param-badge${saved ? '' : ' warn'}`;
       badge.textContent = saved ? '已配置' : '待填写';
       title.appendChild(badge);
@@ -2584,9 +2589,15 @@
       // 顺带回显真实发出的请求：万一「收到消息但内容不对」，
       // 这里能立刻看出是 Worker 发了什么（也是判断部署有没有更新的依据）
       const req = data.request;
-      const echo = req
-        ? ` ｜ 实际请求：${req.method} ${req.url}，JSON 字段 ${req.bodyKeys.join('/')}`
-        : '';
+      const parts = [];
+      if (req) {
+        parts.push(`实际请求：${req.method} ${req.url}`);
+        if (req.bodyKeys?.length) parts.push(`字段 ${req.bodyKeys.join('/')}`);
+        if (req.bodyPreview) parts.push(`请求体 ${req.bodyPreview}`);
+        else if (req.contentType) parts.push(`Content-Type ${req.contentType}`);
+        if (req.templateMissingPlaceholders) parts.push(`⚠ ${req.templateMissingPlaceholders}`);
+      }
+      const echo = parts.length ? ` ｜ ${parts.join('，')}` : '';
       setStatus(el.notifyStatus, `${data.message || '测试消息已发送'}${echo}`, 'ok');
     } catch (err) {
       setStatus(el.notifyStatus, `测试失败：${err.message}`, 'err');

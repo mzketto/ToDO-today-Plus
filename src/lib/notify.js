@@ -153,7 +153,7 @@ export const CHANNEL_FIELDS = {
       { key: 'method', label: '方法', placeholder: 'POST / PUT（默认 POST）', optional: true },
       { key: 'contentType', label: 'Content-Type', placeholder: '默认 application/json', optional: true },
       { key: 'headers', label: '额外请求头', placeholder: 'JSON，如 {"Authorization":"Bearer xxx"}', optional: true, secret: true },
-      { key: 'template', label: '请求体模板', placeholder: '可留空；支持 {text} {title} {count} {items} 占位符', optional: true },
+      { key: 'template', label: '请求体模板', placeholder: '如 {"token":"xxx","title":"{title}","content":"{text}"}；可留空用默认 {title,text,count}', optional: true },
     ],
   },
   serverchan: {
@@ -1085,7 +1085,20 @@ export async function testChannel(env, channel, config) {
     items: [],
   };
   const params = config.params?.[channel] || {};
-  const result = await sendOne(channel, params, message, env);
+  let result;
+  try {
+    result = await sendOne(channel, params, message, env);
+  } catch (err) {
+    // 失败时同样回显实际请求——用户正是这时候最需要知道「到底发了什么」
+    const req = describeRequest(channel, params, env);
+    if (req) {
+      const parts = [`实际请求：${req.method} ${req.url}`];
+      if (req.bodyPreview) parts.push(`请求体 ${req.bodyPreview}`);
+      if (req.templateMissingPlaceholders) parts.push(`注意：${req.templateMissingPlaceholders}`);
+      err.message = `${err.message}（${parts.join('，')}）`;
+    }
+    throw err;
+  }
   // 回显真实发出的请求，方便排查「收到了但正文不对」这类上游解析问题
   const request = describeRequest(channel, params, env);
   return { message: `测试消息已发出（${result.detail}）`, detail: result.detail, request };
@@ -1096,6 +1109,28 @@ export async function testChannel(env, channel, config) {
  * 用户在「发送测试」里看到它，就能判断 Worker 跑的是不是最新代码。
  */
 export function describeRequest(channel, params = {}, env = {}) {
+  if (channel === 'webhook') {
+    const p = params || {};
+    const headers = parseJsonInput(p.headers);
+    let url = '(未配置地址)';
+    try { url = normalizeUrl(p.url); } catch { /* 保持占位 */ }
+    return {
+      method: (notify_pickString(p.method) || 'POST').toUpperCase(),
+      url,
+      contentType: notify_pickString(p.contentType) || 'application/json',
+      bodyKeys: notify_pickString(p.template)
+        ? ['(自定义模板)']
+        : ['title', 'text', 'count'],
+      headerKeys: headers && typeof headers === 'object' ? Object.keys(headers) : [],
+      bodyPreview: notify_pickString(p.template)
+        ? notify_pickString(p.template).slice(0, 200)
+        : '默认请求体 {"title":"…","text":"…","count":N}；接口要求别的字段名（如 content/token）时，请在「请求体模板」里写 {"token":"…","title":"{title}","content":"{text}"}',
+      templateMissingPlaceholders: notify_pickString(p.template) && !/\{(title|text|items|count)\}/.test(notify_pickString(p.template))
+        ? '模板里没有 {text}/{title} 等占位符，待办内容不会出现在推送里——请把正文放进去，如 {"content":"{text}"}'
+        : '',
+      note: '请求头/模板里的密钥值不会回显',
+    };
+  }
   if (channel === 'serverchan') {
     const p = params || {};
     const key = notify_pickString(p.sendKey) || notify_pickString(env.NOTIFY_SERVERCHAN_KEY);

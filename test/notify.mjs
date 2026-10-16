@@ -33,6 +33,7 @@ import {
   splitList,
   feishuSign,
   sendOne,
+  testChannel,
   describeRequest,
 } from '../src/lib/notify.js';
 
@@ -659,6 +660,50 @@ test('Server 酱：自检回显说明真实请求 URL，且不泄漏完整 SendK
 
   const empty = describeRequest('serverchan', {}, {});
   assert.equal(empty.url, '(未配置 SendKey)');
+});
+
+test('Webhook：自检回显默认请求体与自定义模板，密钥值不回显', async () => {
+  const def = describeRequest('webhook', { url: 'https://hook.example.com/a', headers: '{"Authorization":"Bearer abc"}' }, {});
+  assert.equal(def.method, 'POST');
+  assert.equal(def.url, 'https://hook.example.com/a');
+  assert.deepEqual(def.bodyKeys, ['title', 'text', 'count']);
+  assert.deepEqual(def.headerKeys, ['Authorization']);
+  assert.ok(!JSON.stringify(def).includes('Bearer abc'), '请求头的值不能回显');
+  assert.match(def.bodyPreview, /请求体模板/);
+
+  const custom = describeRequest('webhook', {
+    url: 'https://wxpush.example.com/wxsend',
+    template: '{"token":"tk","title":"{title}","content":"{text}"}',
+  }, {});
+  assert.deepEqual(custom.bodyKeys, ['(自定义模板)']);
+  assert.match(custom.bodyPreview, /content/);
+  assert.equal(custom.templateMissingPlaceholders, '', '含占位符的模板不应告警');
+
+  // 模板漏写占位符：待办内容进不了推送，必须明确提示（用户实测踩过）
+  const noPh = describeRequest('webhook', {
+    url: 'https://wxpush.example.com/wxsend',
+    template: '{"token":"tk","content":"测试"}',
+  }, {});
+  assert.match(noPh.templateMissingPlaceholders, /没有 \{text\}\/\{title\}/);
+});
+
+test('Webhook：发送失败时错误消息附带实际请求信息（方便自查字段名对不对）', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    '{"msg":"Missing required parameters: content, title, token"}',
+    { status: 400, headers: { 'content-type': 'application/json' } },
+  );
+  try {
+    await assert.rejects(
+      () => testChannel({}, 'webhook', { params: { webhook: { url: 'https://wxpush.example.com/wxsend' } } }),
+      (err) => {
+        assert.match(err.message, /Missing required parameters/);
+        assert.match(err.message, /实际请求：POST https:\/\/wxpush\.example\.com\/wxsend/);
+        assert.match(err.message, /请求体模板/, '未填模板时应提示去写模板');
+        return true;
+      },
+    );
+  } finally { globalThis.fetch = original; }
 });
 
 test('Server 酱：code != 0 视为失败并带上原因', async () => {
