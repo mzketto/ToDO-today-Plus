@@ -369,17 +369,19 @@ const SAMPLE = buildMessage([{ title: '交房租', dueDate: '2026-10-19', days: 
   appName: '今日待办', now: new Date('2026-10-16T02:00:00Z'), timeZone: 'Asia/Shanghai',
 });
 
-test('Bark：POST /push，Device Key 走请求头', async () => {
+test('Bark：POST /push，Device Key 按 官方格式 放 JSON body（device_key 字段）', async () => {
   const m = installFetchMock();
   try {
     await sendOne('bark', { key: 'bk123', group: '工作', sound: 'bell' }, SAMPLE, {});
     const call = m.last();
     assert.equal(call.method, 'POST');
     assert.equal(call.url, 'https://api.day.app/push');
-    assert.equal(call.headers['x-bark-key'], 'bk123', 'Device Key 应放请求头而不是 URL 里');
+    assert.equal(call.json.device_key, 'bk123', 'Device Key 应按官方 API 放 JSON body（部分服务器不认 x-bark-key 头，会把 URL 路径当正文）');
+    assert.ok(!call.headers['x-bark-key'], '不再使用非官方请求头');
     assert.equal(call.json.group, '工作');
     assert.equal(call.json.sound, 'bell');
     assert.match(call.json.body, /交房租/);
+    assert.match(call.json.title, /待办提醒/);
     // 自建服务器
     await sendOne('bark', { server: 'https://bark.example.com/', key: 'k' }, SAMPLE, {});
     assert.equal(m.last().url, 'https://bark.example.com/push', '自定义服务器应生效且去掉尾部斜杠');
@@ -664,7 +666,7 @@ test('环境变量兜底：配置里没填密钥时用 Worker 密钥', async () 
   const m = installFetchMock();
   try {
     await sendOne('bark', {}, SAMPLE, { NOTIFY_BARK_KEY: 'env-key' });
-    assert.equal(m.last().headers['x-bark-key'], 'env-key');
+    assert.equal(m.last().json.device_key, 'env-key');
 
     await sendOne('telegram', { chatId: '1' }, SAMPLE, { NOTIFY_TELEGRAM_BOT_TOKEN: 'env-bot' });
     assert.match(m.last().url, /botenv-bot/);

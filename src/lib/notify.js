@@ -715,13 +715,15 @@ export async function sendOne(channel, params, message, env = {}) {
   const text = message.text;
 
   switch (channel) {
-    /* ---------------- Bark：GET/POST /push ---------------- */
+    /* ---------------- Bark：POST /push ---------------- */
     case 'bark': {
       const server = normalizeUrl(p.server || 'https://api.day.app');
       const key = required(p.key, 'Bark Device Key', env.NOTIFY_BARK_KEY);
-      const payload = { title, body: text, group: p.group || '今日待办' };
+      // 官方格式：device_key 放在 JSON body 里（x-bark-key 头不在官方 API 里，
+      // 部分 bark-server 不认，会把 URL 路径段当成正文，导致通知只剩标题）
+      const payload = { device_key: key, title, body: text, group: p.group || '今日待办' };
       if (p.sound) payload.sound = p.sound;
-      const result = await postJson(`${server}/push`, payload, { 'x-bark-key': key });
+      const result = await postJson(`${server}/push`, payload);
       assertUpstreamOk('bark', result);
       return { channel, detail: 'Bark 已推送' };
     }
