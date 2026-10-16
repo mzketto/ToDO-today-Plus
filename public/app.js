@@ -10,7 +10,7 @@
   'use strict';
 
   const API_BASE = '/api';
-  const APP_VERSION = '1.2.2';
+  const APP_VERSION = '1.2.3';
 
   const URL_PARAMS = new URLSearchParams(location.search);
   /** ?demo=1 直接进入演示模式并灌入示例数据，用于无后端时预览界面 */
@@ -2581,7 +2581,13 @@
         method: 'POST',
         body: { channel, config: collectNotifyForm() },
       });
-      setStatus(el.notifyStatus, data.message || '测试消息已发送', 'ok');
+      // 顺带回显真实发出的请求：万一「收到消息但内容不对」，
+      // 这里能立刻看出是 Worker 发了什么（也是判断部署有没有更新的依据）
+      const req = data.request;
+      const echo = req
+        ? ` ｜ 实际请求：${req.method} ${req.url}，JSON 字段 ${req.bodyKeys.join('/')}`
+        : '';
+      setStatus(el.notifyStatus, `${data.message || '测试消息已发送'}${echo}`, 'ok');
     } catch (err) {
       setStatus(el.notifyStatus, `测试失败：${err.message}`, 'err');
     }

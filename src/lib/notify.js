@@ -719,8 +719,9 @@ export async function sendOne(channel, params, message, env = {}) {
     case 'bark': {
       const server = normalizeUrl(p.server || 'https://api.day.app');
       const key = required(p.key, 'Bark Device Key', env.NOTIFY_BARK_KEY);
-      // 官方格式：device_key 放在 JSON body 里（x-bark-key 头不在官方 API 里，
-      // 部分 bark-server 不认，会把 URL 路径段当成正文，导致通知只剩标题）
+      // 官方 API：POST /push，device_key / title / body 放在 JSON body 里。
+      // 不要用 x-bark-key 这类自创请求头 —— 部分 bark-server 不认，回退解析
+      // URL 路径时会把路径段当成正文，通知就只剩标题（正文显示成 "push"）。
       const payload = { device_key: key, title, body: text, group: p.group || '今日待办' };
       if (p.sound) payload.sound = p.sound;
       const result = await postJson(`${server}/push`, payload);
@@ -1049,7 +1050,28 @@ export async function testChannel(env, channel, config) {
   };
   const params = config.params?.[channel] || {};
   const result = await sendOne(channel, params, message, env);
-  return { message: `测试消息已发出（${result.detail}）`, detail: result.detail };
+  // 回显真实发出的请求，方便排查「收到了但正文不对」这类上游解析问题
+  const request = describeRequest(channel, params, env);
+  return { message: `测试消息已发出（${result.detail}）`, detail: result.detail, request };
+}
+
+/**
+ * 生成「将发出什么请求」的可读描述，只暴露结构与正文，绝不回显密钥。
+ * 用户在「发送测试」里看到它，就能判断 Worker 跑的是不是最新代码。
+ */
+export function describeRequest(channel, params = {}, env = {}) {
+  if (channel !== 'bark') return null;
+  const p = params || {};
+  const server = notify_pickString(p.server) || 'https://api.day.app';
+  const key = notify_pickString(p.key) || notify_pickString(env.NOTIFY_BARK_KEY);
+  return {
+    method: 'POST',
+    url: `${server.replace(/\/+$/, '')}/push`,
+    contentType: 'application/json; charset=utf-8',
+    bodyKeys: ['device_key', 'title', 'body', 'group'],
+    deviceKeyTail: key ? `…${key.slice(-4)}` : '(未配置)',
+    note: 'device_key 放在 JSON body 里（Bark 官方 API）；不使用自定义请求头',
+  };
 }
 
 /* ============================== 到期扫描 ============================== */

@@ -679,7 +679,14 @@
         点<strong>立即检查</strong>可绕过立刻验证。</li>
     <li><strong>已经推过一次</strong>：每个「任务 + 到期日 + 渠道」只推一次，
         想重新收到就把任务的到期日改一下。</li>
-    <li><strong>渠道参数错</strong>：点「发送测试」，报错里会带上游返回的具体原因。</li>
+    <li><strong>渠道参数错</strong>：点「发送测试」，报错里会带上游返回的具体原因。
+        「发送测试」还会在状态栏回显<strong>实际发出的请求</strong>（方法 / URL / JSON 字段），
+        可用来确认 Worker 是否已更新到最新代码。</li>
+    <li><strong>Bark 收到通知但正文是空的、或显示成 "push"</strong>：这是 Device Key 放错位置的症状。
+        官方 API 要求把 <code>device_key</code> 放在 <code>POST /push</code> 的
+        <strong>JSON 请求体</strong>里；用自定义请求头（如 <code>x-bark-key</code>）时，
+        部分 bark-server 不认，会回退解析 URL 路径，把路径段 <code>push</code> 当成正文。
+        本项目已按官方格式发送，<strong>升级后请重新部署</strong>再点「发送测试」确认。</li>
   </ol>
   <p>拿不准时点<strong>立即检查</strong>：它会把具体原因直接说出来——
      「任务到期日为空」「到期日超出了提前 N 天的窗口」「提醒未开启」「还没选推送渠道」各有一句专属提示；

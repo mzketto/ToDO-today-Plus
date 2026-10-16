@@ -33,6 +33,7 @@ import {
   splitList,
   feishuSign,
   sendOne,
+  describeRequest,
 } from '../src/lib/notify.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -367,6 +368,20 @@ test('飞书签名：同样的时间戳与密钥产生稳定的 base64 签名', 
 
 const SAMPLE = buildMessage([{ title: '交房租', dueDate: '2026-10-19', days: 3 }], {
   appName: '今日待办', now: new Date('2026-10-16T02:00:00Z'), timeZone: 'Asia/Shanghai',
+});
+
+test('Bark 自检回显：说明真实请求，且绝不泄漏完整密钥', () => {
+  const req = describeRequest('bark', { server: 'https://bark.example.com/', key: 'abcdef123456' }, {});
+  assert.equal(req.method, 'POST');
+  assert.equal(req.url, 'https://bark.example.com/push', '尾部斜杠应去掉');
+  assert.deepEqual(req.bodyKeys, ['device_key', 'title', 'body', 'group']);
+  assert.equal(req.deviceKeyTail, '…3456', '只回显尾 4 位');
+  assert.ok(!JSON.stringify(req).includes('abcdef123456'), '完整密钥不能出现在回显里');
+
+  // 未配置时不炸，且标出未配置
+  assert.equal(describeRequest('bark', {}, {}).deviceKeyTail, '(未配置)');
+  // 非 bark 渠道没有这层回显
+  assert.equal(describeRequest('gotify', {}, {}), null);
 });
 
 test('Bark：POST /push，Device Key 按 官方格式 放 JSON body（device_key 字段）', async () => {
