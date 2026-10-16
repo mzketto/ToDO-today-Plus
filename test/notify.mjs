@@ -706,6 +706,35 @@ test('Webhook：发送失败时错误消息附带实际请求信息（方便自�
   } finally { globalThis.fetch = original; }
 });
 
+test('Webhook：多行正文 + JSON 模板必须产出合法 JSON（裸换行会让上游解析不出参数）', async () => {
+  const m = installFetchMock();
+  try {
+    await sendOne('webhook', {
+      url: 'https://hook.example.com/c',
+      template: '{"token":"tk","title":"{title}","content":"{text}"}',
+    }, { ...SAMPLE, text: '第一行\n\n第三行"引号"' }, {});
+    const call = m.last();
+    // body 必须能被 JSON.parse（裸换行会直接炸），且值里的换行被转义
+    assert.doesNotThrow(() => JSON.parse(call.body), '请求体必须是合法 JSON');
+    const parsed = JSON.parse(call.body);
+    assert.equal(parsed.content.includes('\n'), true);
+    assert.equal(parsed.content.includes('第三行'), true);
+    assert.equal(parsed.token, 'tk');
+  } finally { m.restore(); }
+});
+
+test('Webhook：模板值恰好是 {items} 时注入真正的数组', async () => {
+  const m = installFetchMock();
+  try {
+    await sendOne('webhook', {
+      url: 'https://hook.example.com/d',
+      template: '{"title":"{title}","list":"{items}"}',
+    }, { ...SAMPLE, items: [{ title: '任务A' }] }, {});
+    const parsed = JSON.parse(m.last().body);
+    assert.deepEqual(parsed.list, [{ title: '任务A' }]);
+  } finally { m.restore(); }
+});
+
 test('Server 酱：code != 0 视为失败并带上原因', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => new Response(
@@ -1625,11 +1654,13 @@ test('不漏推：应用长期没打开，任务「进窗口」那轮 Cron 一�
   await c.call('POST', '/api/auth/register', { username: 'noleak1', password: 'secret123' });
 
   // 提前 3 天提醒，任务 3 天后到期（刚好进窗口）
+  // 注意日期必须用与配置一致的 UTC 时区计算：用本地（东八区）日期的话，
+  // 北京时间 0 点后「到期日」比 UTC 的今天多偏一天，窗口判定会漂移
   await c.call('PUT', '/api/notify/config', {
     enabled: true, channels: ['bark'], leadDays: 3, time: '00:00', tz: 'UTC',
     params: { bark: { key: 'k' } },
   });
-  await c.call('POST', '/api/todos', { title: '别漏掉我', date: localDate(), dueDate: localDate(3) });
+  await c.call('POST', '/api/todos', { title: '别漏掉我', date: localDate(0, 'UTC'), dueDate: localDate(3, 'UTC') });
 
   const m = installFetchMock();
   try {

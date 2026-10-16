@@ -223,6 +223,15 @@ function parseJsonInput(value) {
   }
 }
 
+/** 尝试解析，失败返回 null（用于模板试探：非法 JSON 是回退信号而不是用户错误） */
+function tryParseJson(value) {
+  try {
+    return parseJsonInput(value);
+  } catch {
+    return null;
+  }
+}
+
 /** 时区安全的「今天」：返回 YYYY-MM-DD */
 export function todayInZone(timeZone = 'UTC', date = new Date()) {
   const options = { year: 'numeric', month: '2-digit', day: '2-digit' };
@@ -895,15 +904,28 @@ export async function sendOne(channel, params, message, env = {}) {
       const headers = parseJsonInput(p.headers) || {};
       if (!headers || typeof headers !== 'object') throw new HttpError('额外请求头需要是 JSON 对象');
 
-      const rendered = renderTemplate(p.template, {
+      const vars = {
         title,
         text,
         count: String(message.count ?? 1),
         items: JSON.stringify(message.items || []),
-      });
+      };
       const fallback = { title, text, count: message.count ?? 1 };
       if (/\{items\}/.test(notify_pickString(p.template))) fallback.items = message.items || [];
-      const bodyText = rendered || JSON.stringify(fallback);
+
+      let bodyText;
+      if (/json/i.test(contentType)) {
+        // JSON：优先对象式渲染（正确转义换行/引号），模板不是合法 JSON 时退回
+        // 文本替换 + 解析校验，再不行用默认体——绝不把非法 JSON 发出去
+        const obj = renderTemplateObject(p.template, vars, message.items || []);
+        const reparsed = obj || tryParseJson(renderTemplate(p.template, vars));
+        bodyText = JSON.stringify(
+          reparsed && typeof reparsed === 'object' && !Array.isArray(reparsed) ? reparsed : fallback,
+        );
+      } else {
+        // 非 JSON（如表单模板）：按纯文本替换后原样发送
+        bodyText = renderTemplate(p.template, vars) || JSON.stringify(fallback);
+      }
 
       const res = await fetchWithTimeout(url, {
         method,
@@ -1016,6 +1038,32 @@ function renderTemplate(template, vars) {
 }
 
 /**
+ * 对象型 JSON 模板渲染：先把模板本身解析成对象（此时 {title} 只是普通字符串，合法），
+ * 在字符串值里做占位符替换，最后由调用方 JSON.stringify 重新序列化。
+ * 这样正文里的换行、引号等字符会被正确转义——直接对模板字符串做文本替换，
+ * 多行正文会产生裸换行 → 非法 JSON → 上游解析不出任何参数（实测踩过的坑）。
+ * 值恰好是 {items} 时注入真正的数组。
+ */
+function renderTemplateObject(template, vars, items) {
+  const parsed = tryParseJson(template);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const walk = (v) => {
+    if (typeof v === 'string') {
+      if (v.trim() === '{items}' && Array.isArray(items)) return items;
+      return renderTemplate(v, vars);
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const o = {};
+      for (const k of Object.keys(v)) o[k] = walk(v[k]);
+      return o;
+    }
+    return v;
+  };
+  return walk(parsed);
+}
+
+/**
  * 渲染出「一段 JSON 文本」：模板替换后必须是合法 JSON 对象，否则回退到默认体。
  * 这样用户模板里写了未转义的中文引号也不会把请求打挂，只会退回默认格式。
  */
@@ -1122,9 +1170,16 @@ export function describeRequest(channel, params = {}, env = {}) {
         ? ['(自定义模板)']
         : ['title', 'text', 'count'],
       headerKeys: headers && typeof headers === 'object' ? Object.keys(headers) : [],
-      bodyPreview: notify_pickString(p.template)
-        ? notify_pickString(p.template).slice(0, 200)
-        : '默认请求体 {"title":"…","text":"…","count":N}；接口要求别的字段名（如 content/token）时，请在「请求体模板」里写 {"token":"…","title":"{title}","content":"{text}"}',
+      bodyPreview: (() => {
+        // 用示例值真实渲染一遍，让用户看到「实际会发出什么」而不是模板原文
+        const sampleVars = { title: '（标题）', text: '（正文，含待办清单）', count: '2', items: '[]' };
+        const sampleItems = [];
+        const obj = renderTemplateObject(p.template, sampleVars, sampleItems);
+        if (obj) return JSON.stringify(obj).slice(0, 260);
+        const tpl = notify_pickString(p.template);
+        if (tpl) return renderTemplate(tpl, sampleVars).slice(0, 260);
+        return '默认请求体 {"title":"…","text":"…","count":N}；接口要求别的字段名（如 content/token）时，请在「请求体模板」里写 {"token":"…","title":"{title}","content":"{text}"}';
+      })(),
       templateMissingPlaceholders: notify_pickString(p.template) && !/\{(title|text|items|count)\}/.test(notify_pickString(p.template))
         ? '模板里没有 {text}/{title} 等占位符，待办内容不会出现在推送里——请把正文放进去，如 {"content":"{text}"}'
         : '',
@@ -1314,6 +1369,10 @@ export async function explainEmptyRun(env, userId, config, { now = new Date(), r
 async function readSentKeys(env, userId, config = {}) {
   const daily = !!config.dailyRepeat;
   const today = config.logDate || '';
+  // 「发送日期」必须和 today 用同一个时区：today 是用户本地日期，
+  // 如果 sent_at 用 UTC 取日期，北京时间 0~8 点（UTC 还是昨天）就会错判
+  // 「这条不是今天推的」，导致同一天重复推/漏推（只在 0 点后 8 点前发作）。
+  const tz = resolveTimeZone(config);
   const collect = async (table) => {
     const { results } = await env.DB
       .prepare(`SELECT todo_id, due_date, channel, sent_at FROM ${table} WHERE user_id = ? AND ok = 1`)
@@ -1323,7 +1382,7 @@ async function readSentKeys(env, userId, config = {}) {
     for (const r of results || []) {
       if (daily) {
         // 每天重复提醒模式：用「发送日期」当作去重维度，同一天只推一次
-        if (today && dayOf(r.sent_at) !== today) continue;
+        if (today && dayOf(r.sent_at, tz) !== today) continue;
         set.add(`${r.todo_id}|*|${r.channel}`);
       } else {
         set.add(`${r.todo_id}|${r.due_date}|${r.channel}`);
