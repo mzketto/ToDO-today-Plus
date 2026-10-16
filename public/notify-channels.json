@@ -1,0 +1,316 @@
+[
+  {
+    "id": "bark",
+    "label": "Bark",
+    "fields": [
+      {
+        "key": "server",
+        "label": "服务器地址",
+        "placeholder": "https://api.day.app（自建可改）",
+        "optional": true
+      },
+      {
+        "key": "key",
+        "label": "Device Key",
+        "placeholder": "在 Bark App 首页复制",
+        "secret": true
+      },
+      {
+        "key": "group",
+        "label": "分组",
+        "placeholder": "可留空",
+        "optional": true
+      },
+      {
+        "key": "sound",
+        "label": "铃声",
+        "placeholder": "可留空，如 bell",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "gotify",
+    "label": "Gotify",
+    "fields": [
+      {
+        "key": "server",
+        "label": "服务器地址",
+        "placeholder": "https://gotify.example.com"
+      },
+      {
+        "key": "token",
+        "label": "App Token",
+        "placeholder": "在 Gotify 里创建的 Application Token",
+        "secret": true
+      },
+      {
+        "key": "priority",
+        "label": "优先级",
+        "placeholder": "0-10，默认 5",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "wxpusher",
+    "label": "WxPusher",
+    "fields": [
+      {
+        "key": "appToken",
+        "label": "AppToken",
+        "placeholder": "AT_xxx（应用管理页获取）",
+        "secret": true
+      },
+      {
+        "key": "uids",
+        "label": "UID",
+        "placeholder": "UID_xxx，多个用逗号分隔",
+        "secret": true
+      },
+      {
+        "key": "topicIds",
+        "label": "主题 ID",
+        "placeholder": "可选，填了则推给主题",
+        "optional": true
+      },
+      {
+        "key": "url",
+        "label": "点击跳转链接",
+        "placeholder": "可留空",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "email",
+    "label": "邮件",
+    "fields": [
+      {
+        "key": "apiKey",
+        "label": "Resend API Key",
+        "placeholder": "re_xxx",
+        "secret": true
+      },
+      {
+        "key": "from",
+        "label": "发件人",
+        "placeholder": "提醒 <todo@yourdomain.com>"
+      },
+      {
+        "key": "to",
+        "label": "收件人",
+        "placeholder": "多个用逗号分隔"
+      }
+    ]
+  },
+  {
+    "id": "telegram",
+    "label": "Telegram",
+    "fields": [
+      {
+        "key": "botToken",
+        "label": "Bot Token",
+        "placeholder": "123456:ABC-DEF...",
+        "secret": true
+      },
+      {
+        "key": "chatId",
+        "label": "Chat ID",
+        "placeholder": "可填 @channelusername 或数字 ID",
+        "secret": true
+      },
+      {
+        "key": "baseUrl",
+        "label": "API 地址",
+        "placeholder": "https://api.telegram.org（代理时改）",
+        "optional": true
+      },
+      {
+        "key": "threadId",
+        "label": "话题 ID",
+        "placeholder": "群组话题可选",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "wechat",
+    "label": "微信机器人",
+    "fields": [
+      {
+        "key": "url",
+        "label": "Webhook 地址",
+        "placeholder": "企业微信应用 / 自建机器人的 webhook"
+      },
+      {
+        "key": "token",
+        "label": "Token / 密钥",
+        "placeholder": "可留空",
+        "secret": true,
+        "optional": true
+      },
+      {
+        "key": "field",
+        "label": "文本字段名",
+        "placeholder": "默认 text",
+        "optional": true
+      },
+      {
+        "key": "template",
+        "label": "请求体模板",
+        "placeholder": "可留空，用 {\"{field}\":\"{text}\"}",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "feishu",
+    "label": "飞书",
+    "fields": [
+      {
+        "key": "url",
+        "label": "Webhook 地址",
+        "placeholder": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+      },
+      {
+        "key": "secret",
+        "label": "签名密钥",
+        "placeholder": "开启了签名校验才需要",
+        "secret": true,
+        "optional": true
+      },
+      {
+        "key": "msgType",
+        "label": "消息类型",
+        "placeholder": "text 或 post（默认 text）",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "wecom",
+    "label": "企业微信",
+    "fields": [
+      {
+        "key": "url",
+        "label": "Webhook 地址",
+        "placeholder": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+      },
+      {
+        "key": "msgType",
+        "label": "消息类型",
+        "placeholder": "text 或 markdown（默认 markdown）",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "webhook",
+    "label": "Webhook",
+    "fields": [
+      {
+        "key": "url",
+        "label": "地址",
+        "placeholder": "https://example.com/hook"
+      },
+      {
+        "key": "method",
+        "label": "方法",
+        "placeholder": "POST / PUT（默认 POST）",
+        "optional": true
+      },
+      {
+        "key": "contentType",
+        "label": "Content-Type",
+        "placeholder": "默认 application/json",
+        "optional": true
+      },
+      {
+        "key": "headers",
+        "label": "额外请求头",
+        "placeholder": "JSON，如 {\"Authorization\":\"Bearer xxx\"}",
+        "optional": true,
+        "secret": true
+      },
+      {
+        "key": "template",
+        "label": "请求体模板",
+        "placeholder": "可留空；支持 {text} {title} {count} {items} 占位符",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "serverchan",
+    "label": "Server 酱",
+    "fields": [
+      {
+        "key": "sendKey",
+        "label": "SendKey",
+        "placeholder": "SCTxxx / sctp 开头的 key",
+        "secret": true
+      },
+      {
+        "key": "channel",
+        "label": "通道",
+        "placeholder": "可留空，如 9（微信服务号）",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "pushplus",
+    "label": "PushPlus",
+    "fields": [
+      {
+        "key": "token",
+        "label": "Token",
+        "placeholder": "pushplus 个人中心获取",
+        "secret": true
+      },
+      {
+        "key": "topic",
+        "label": "群组编码",
+        "placeholder": "一对多推送时填写",
+        "optional": true
+      },
+      {
+        "key": "template",
+        "label": "模板",
+        "placeholder": "html / markdown / txt",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "id": "ntfy",
+    "label": "ntfy",
+    "fields": [
+      {
+        "key": "server",
+        "label": "服务器地址",
+        "placeholder": "https://ntfy.sh（自建可改）",
+        "optional": true
+      },
+      {
+        "key": "topic",
+        "label": "主题",
+        "placeholder": "订阅的主题名"
+      },
+      {
+        "key": "token",
+        "label": "访问令牌",
+        "placeholder": "自建服务开启了鉴权才需要",
+        "secret": true,
+        "optional": true
+      },
+      {
+        "key": "priority",
+        "label": "优先级",
+        "placeholder": "1-5，默认 3",
+        "optional": true
+      }
+    ]
+  }
+]
