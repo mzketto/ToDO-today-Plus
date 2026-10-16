@@ -802,12 +802,12 @@ test('端到端：设了到期日的任务，到点后「立即检查」会把�
   } finally { m.restore(); }
 });
 
-test('去重：同一条任务同一到期日只推一次，再点「立即检查」不重复打扰', async () => {
+test('去重：dailyRepeat=false 时同一条任务同一到期日只推一次，再点「立即检查」不重复打扰', async () => {
   const { env, ctx } = makeEnv();
   const c = makeClient(env, ctx);
   await c.call('POST', '/api/auth/register', { username: 'dedupe1', password: 'secret123' });
   await c.call('PUT', '/api/notify/config', {
-    enabled: true, channels: ['bark'], leadDays: 1, time: '00:00',
+    enabled: true, channels: ['bark'], leadDays: 1, time: '00:00', dailyRepeat: false,
     params: { bark: { key: 'k' } },
   });
   await c.call('POST', '/api/todos', { title: '只提醒一次', date: localDate(), dueDate: localDate(1) });
@@ -891,6 +891,68 @@ test('每日提醒开关：dailyRepeat=true 时，同一条任务每天都会推
     const r3 = await c.call('POST', '/api/notify/run');
     assert.equal(r3.data.report.sent, 0, '同一天内不重复推');
     assert.equal(m.calls.length, 2);
+  } finally { m.restore(); }
+});
+
+test('默认每天提醒：提前 N 天设置下，N/N-1/…/1 天内每天都会提醒（用户报告的主 bug）', async () => {
+  const { env, ctx, db } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'dailydef1', password: 'secret123' });
+  // 不传 dailyRepeat -> v2 起默认每天提醒
+  await c.call('PUT', '/api/notify/config', {
+    enabled: true, channels: ['bark'], leadDays: 5, time: '00:00',
+    params: { bark: { key: 'k' } },
+  });
+  await c.call('POST', '/api/todos', { title: '五天后到期', date: localDate(), dueDate: localDate(5) });
+
+  const m = installFetchMock();
+  try {
+    // 第 5 天：进窗口第一轮，推送
+    const r1 = await c.call('POST', '/api/notify/run');
+    assert.equal(r1.data.report.sent, 1, '第 5 天（进窗口）应推送');
+    assert.equal(m.calls.length, 1);
+
+    const userId = db._raw.prepare("SELECT id FROM users WHERE username = 'dailydef1'").get().id;
+    // 依次把推送记录拨回「昨天」，模拟过了 4/3/2/1 天，每天都要再提醒
+    for (let i = 0; i < 4; i += 1) {
+      const yesterday = Math.floor(Date.now() / 1000) - 86400;
+      db._raw.prepare('UPDATE notify_log SET sent_at = ? WHERE user_id = ?').run(yesterday, userId);
+      const r = await c.call('POST', '/api/notify/run');
+      assert.equal(r.data.report.sent, 1, `窗口内第 ${4 - i} 次检查（提前 ${4 - i} 天）也应提醒`);
+      assert.equal(m.calls.length, 2 + i, '每天都应发出一次请求');
+    }
+  } finally { m.restore(); }
+});
+
+test('v1 配置迁移：老库存的 dailyRepeat=false（旧默认）自动升级为每天提醒', async () => {
+  const { env, ctx, db } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'migr1', password: 'secret123' });
+  await c.call('PUT', '/api/notify/config', {
+    enabled: true, channels: ['bark'], leadDays: 5, time: '00:00',
+    params: { bark: { key: 'k' } },
+  });
+  // 手工把存储降级成 v1 形态：version=1、dailyRepeat=false（v1 时代的默认值）
+  const userId = db._raw.prepare("SELECT id FROM users WHERE username = 'migr1'").get().id;
+  const row = db._raw.prepare('SELECT notify_json FROM notifications WHERE user_id = ?').get(userId);
+  const v1 = { ...JSON.parse(row.notify_json), version: 1, dailyRepeat: false };
+  db._raw.prepare('UPDATE notifications SET notify_json = ? WHERE user_id = ?').run(JSON.stringify(v1), userId);
+
+  await c.call('POST', '/api/todos', { title: '迁移后每天提醒', date: localDate(), dueDate: localDate(5) });
+
+  const m = installFetchMock();
+  try {
+    const r1 = await c.call('POST', '/api/notify/run');
+    assert.equal(r1.data.report.sent, 1);
+
+    const yesterday = Math.floor(Date.now() / 1000) - 86400;
+    db._raw.prepare('UPDATE notify_log SET sent_at = ? WHERE user_id = ?').run(yesterday, userId);
+    const r2 = await c.call('POST', '/api/notify/run');
+    assert.equal(r2.data.report.sent, 1, 'v1 老配置迁移后应每天提醒，而不是只推一次');
+
+    // 读取配置应看到 version 已是当前版本、dailyRepeat=true
+    const cfg = await c.call('GET', '/api/notify/config');
+    assert.equal(cfg.data.config.dailyRepeat, true);
   } finally { m.restore(); }
 });
 
@@ -1410,9 +1472,9 @@ test('提前天数调小：已推过的任务不会因为改配置被重新推�
   await c.call('POST', '/api/auth/register', { username: 'shrink1', password: 'secret123' });
   await c.call('POST', '/api/todos', { title: '三天后到期', date: localDate(), dueDate: localDate(3) });
 
-  // 先按提前 7 天推一次
+  // 先按提前 7 天推一次（显式单次模式：进窗口那天推完就不再推）
   await c.call('PUT', '/api/notify/config', {
-    enabled: true, channels: ['bark'], leadDays: 7, time: '00:00', params: { bark: { key: 'k' } },
+    enabled: true, channels: ['bark'], leadDays: 7, time: '00:00', dailyRepeat: false, params: { bark: { key: 'k' } },
   });
   const m = installFetchMock();
   try {
@@ -1529,7 +1591,7 @@ test('去重粒度是「渠道」：新增渠道后，老任务会在新渠道�
   const c = makeClient(env, ctx);
   await c.call('POST', '/api/auth/register', { username: 'addch1', password: 'secret123' });
   await c.call('PUT', '/api/notify/config', {
-    enabled: true, channels: ['bark'], leadDays: 1, time: '00:00', params: { bark: { key: 'k' } },
+    enabled: true, channels: ['bark'], leadDays: 1, time: '00:00', dailyRepeat: false, params: { bark: { key: 'k' } },
   });
   await c.call('POST', '/api/todos', { title: '补推测试', date: localDate(), dueDate: localDate(1) });
 

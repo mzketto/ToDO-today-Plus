@@ -31,7 +31,7 @@ import { countMissingDue } from './todos.js';
 
 /* ============================== 常量 ============================== */
 
-export const NOTIFY_VERSION = 1;
+export const NOTIFY_VERSION = 2;
 
 /** 支持的渠道清单（顺序即设置页的展示顺序） */
 export const CHANNELS = [
@@ -77,7 +77,7 @@ const EMPTY_NOTIFY_CONFIG = {
   enabled: false,           // 总开关
   channels: [],             // 启用的渠道（CHANNELS 的子集）
   leadDays: 1,              // 提前多少天开始提醒（0 = 当天提醒）
-  dailyRepeat: false,       // true = 到期前每天提醒；false = 只提醒一次
+  dailyRepeat: true,        // true = 进入提醒窗口后每天提醒（默认）；false = 只在进窗口那天提醒一次
   includeOverdue: true,     // 是否连「已过期」的一起提醒
   tz: '',                   // 用户时区（Cron 触发时没有请求上下文，用它算「今天」）
   time: '09:00',            // 每天几点之后才推送（本地时间，避免半夜吵人）
@@ -339,7 +339,7 @@ export function normalizeNotifyConfig(input = {}, previous = {}) {
     enabled: pickBool(input.enabled, !!previous.enabled),
     channels: enabledChannels,
     leadDays,
-    dailyRepeat: pickBool(input.dailyRepeat, !!previous.dailyRepeat),
+    dailyRepeat: pickBool(input.dailyRepeat, previous.dailyRepeat ?? EMPTY_NOTIFY_CONFIG.dailyRepeat),
     includeOverdue: input.includeOverdue === undefined
       ? (previous.includeOverdue !== false)
       : !!input.includeOverdue,
@@ -498,6 +498,10 @@ export async function readNotifyConfig(env, userId) {
         stored = {};
       }
     }
+    // v1 迁移：v1 的「每天提醒」默认是关的，实际表现是「只在进入提醒窗口那天推一次」，
+    // 与「提前 N 天提醒」的直觉（N 天内每天提醒）相悖，被用户当成 bug。
+    // v2 起默认改为每天提醒；老配置统一按新默认跑一次，之后用户再关就是明确选择。
+    if ((Number(stored.version) || 0) < NOTIFY_VERSION) stored.dailyRepeat = undefined;
     return {
       config: normalizeNotifyConfig({ ...stored, lastScan: row.last_scan ?? null }, stored),
       exists: true,

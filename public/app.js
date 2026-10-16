@@ -10,7 +10,7 @@
   'use strict';
 
   const API_BASE = '/api';
-  const APP_VERSION = '1.2.1';
+  const APP_VERSION = '1.2.2';
 
   const URL_PARAMS = new URLSearchParams(location.search);
   /** ?demo=1 直接进入演示模式并灌入示例数据，用于无后端时预览界面 */
@@ -373,7 +373,7 @@
   /* --- 演示模式下的到期提醒 --- */
   function demoNotifyDefaults() {
     return {
-      enabled: false, channels: [], leadDays: 1, dailyRepeat: false,
+      enabled: false, channels: [], leadDays: 1, dailyRepeat: true,
       includeOverdue: true, tz: clientTimeZone(), time: '09:00',
       checkInterval: 5, params: {},
     };
