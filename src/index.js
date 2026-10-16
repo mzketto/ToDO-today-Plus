@@ -377,7 +377,12 @@ async function route(request, env, ctx, url) {
   if (path === '/api/notify/run' && method === 'POST') {
     const user = await auth.requireUser(request, env);
     await notify.ensureNotifyTables(env);
-    const { config } = await notify.readNotifyConfig(env, user.id);
+    const body = await readJson(request);
+    const { config: previous } = await notify.readNotifyConfig(env, user.id);
+    // 允许带当前表单来跑（与「发送测试」一致）：还没保存的开关/渠道修改也能立即验证
+    const config = body?.config
+      ? notify.normalizeNotifyConfig(body.config, previous)
+      : previous;
     const report = await notify.runNotifyForUser(env, user.id, config, {
       now: new Date(),
       ignoreQuietHours: true,   // 手动触发不受「每天几点后推送」限制
@@ -385,7 +390,9 @@ async function route(request, env, ctx, url) {
     });
     const message = report.sent
       ? `已推送 ${report.sent} 个渠道`
-      : (report.due ? `有 ${report.due} 项到期任务，但没有渠道需要推送（可能已推送过）` : '当前没有需要提醒的任务');
+      : (report.due
+          ? `有 ${report.due} 项到期任务，但没有渠道需要推送（可能已推送过）`
+          : await notify.explainEmptyRun(env, user.id, config, { now: new Date(), reqTz }));
     return ok({ message, report });
   }
 

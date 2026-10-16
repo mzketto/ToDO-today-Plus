@@ -1089,6 +1089,72 @@ export function offsetDay(dateStr, delta) {
 }
 
 /**
+ * 诊断「为什么没有任务会被提醒」。
+ * 预览为空 / 立即检查没东西可推时，笼统的「没有需要提醒的任务」没法帮用户定位，
+ * 这里把数据侧的原因说清楚：到底是没有任务设到期日，还是到期日都在窗口外。
+ * （开关未开 / 没选渠道这类配置侧原因由 explainEmptyRun 在外层判断。）
+ *
+ * @returns {Promise<string>} 人类可读的原因；空串表示说不清（维持原样即可）
+ */
+export async function describeNotifyGap(env, userId, config, { today, leadDays } = {}) {
+  let rows = [];
+  try {
+    const res = await env.DB.prepare(
+      `SELECT due_date, COUNT(*) AS n
+         FROM todos
+        WHERE user_id = ? AND done = 0 AND due_date IS NOT NULL AND due_date != ''
+        GROUP BY due_date
+        ORDER BY due_date ASC`,
+    )
+      .bind(userId)
+      .all();
+    rows = res.results || [];
+  } catch {
+    return '';   // 老库没有 due_date 列时不猜原因
+  }
+  if (!rows.length) {
+    return '当前未完成的任务都没有设置到期日：在新增框的「到期日」按钮或任务卡上的日期徽标里设置后，才会触发提醒';
+  }
+
+  const lead = Number.isFinite(leadDays) ? leadDays : (config.leadDays ?? 1);
+  const todayNum = dayNumber(today);
+  const windowEnd = offsetDay(today, lead);
+  const withDue = rows.reduce((sum, r) => sum + Number(r.n || 0), 0);
+
+  // 窗口外最近的到期日（只在未来的才算「即将到期但超出窗口」）
+  const upcoming = rows.find((r) => {
+    const n = dayNumber(r.due_date);
+    return n !== null && todayNum !== null && n > todayNum + lead;
+  });
+  if (upcoming) {
+    return `有 ${withDue} 个任务设置了到期日，但最近的 ${upcoming.due_date} 超出了「提前 ${lead} 天」的提醒窗口，可把「提前几天」调大`;
+  }
+
+  // 剩下的只有已过期任务，而用户关掉了「已过期也提醒」
+  const hasOverdueOnly = rows.every((r) => {
+    const n = dayNumber(r.due_date);
+    return n !== null && todayNum !== null && n < todayNum;
+  });
+  if (hasOverdueOnly && config.includeOverdue === false) {
+    return `有 ${withDue} 个任务设置了到期日但都已过期，而「已过期任务也提醒」是关闭的`;
+  }
+  return '';
+}
+
+/**
+ * 「立即检查」没有东西可推时，给出具体原因（配置侧 + 数据侧）。
+ */
+export async function explainEmptyRun(env, userId, config, { now = new Date(), reqTz = '' } = {}) {
+  if (!config.enabled) return '到期提醒未开启：请先打开「启用到期提醒」并保存配置';
+  const channels = (config.channels || []).filter((c) => CHANNELS.includes(c));
+  if (!channels.length) return '还没有选择推送渠道：请在「推送渠道」里至少勾选一个并保存';
+  const tz = resolveTimeZone(config, reqTz);
+  const today = todayInZone(tz, now);
+  const gap = await describeNotifyGap(env, userId, config, { today, leadDays: config.leadDays });
+  return gap || '当前没有需要提醒的任务';
+}
+
+/**
  * 查已推送记录，返回 Set('todoId|dueDate|channel')。
  * 主表写不进去时（例如老库结构对不上）降级查一张宽松的备用表，
  * 这样「别重复打扰」这个承诺在任何库结构下都成立。
@@ -1293,11 +1359,16 @@ export async function runScheduledNotify(env, { now = new Date() } = {}) {
   return report;
 }
 
-/** 预览「当前会提醒哪些任务」，供设置页展示 */
+/** 预览「当前会提醒哪些任务」，供设置页展示；为空时附带原因，帮用户定位 */
 export async function previewDue(env, userId, config, { now = new Date(), reqTz = '' } = {}) {
   const tz = resolveTimeZone(config, reqTz);
   const today = todayInZone(tz, now);
   const withOffset = { ...config, dateOffset: dayNumber(today) };
   const items = await findDueTodos(env, userId, withOffset, { today });
-  return { today, tz, leadDays: config.leadDays ?? 1, items };
+  const leadDays = config.leadDays ?? 1;
+  const out = { today, tz, leadDays, items };
+  if (!items.length) {
+    out.hint = await describeNotifyGap(env, userId, config, { today, leadDays });
+  }
+  return out;
 }

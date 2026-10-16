@@ -391,7 +391,20 @@
         return true;
       })
       .sort((a, b) => a.days - b.days);
-    return { today, tz: cfg.tz || clientTimeZone(), leadDays: lead, items };
+    const out = { today, tz: cfg.tz || clientTimeZone(), leadDays: lead, items };
+    if (!items.length) {
+      // 与后端 describeNotifyGap 对齐：预览为空时告诉用户原因
+      const withDue = (db.todos || []).filter((t) => !t.done && t.dueDate);
+      if (!withDue.length) {
+        out.hint = '当前未完成的任务都没有设置到期日：在新增框的「到期日」按钮或任务卡上的日期徽标里设置后，才会触发提醒';
+      } else {
+        const next = withDue.map((t) => t.dueDate).sort()[0];
+        if (daysBetween(today, next) > lead) {
+          out.hint = `有 ${withDue.length} 个任务设置了到期日，但最近的 ${next} 超出了「提前 ${lead} 天」的提醒窗口，可把「提前几天」调大`;
+        }
+      }
+    }
+    return out;
   }
 
   function demoList(todos, date) {
@@ -2368,9 +2381,10 @@
     if (!items.length) {
       const p = document.createElement('p');
       p.className = 'preview-empty';
-      p.textContent = preview
-        ? `按当前配置（提前 ${preview.leadDays} 天），暂时没有会被提醒的任务。`
-        : '暂无预览数据。';
+      p.textContent = preview?.hint
+        || (preview
+          ? `按当前配置（提前 ${preview.leadDays} 天），暂时没有会被提醒的任务。`
+          : '暂无预览数据。');
       box.appendChild(p);
       return;
     }
@@ -2474,7 +2488,8 @@
   el.notifyRun.addEventListener('click', async () => {
     setStatus(el.notifyStatus, '正在检查到期任务…', 'busy');
     try {
-      const data = await api('/notify/run', { method: 'POST' });
+      // 带上当前表单（与「发送测试」一致）：没保存的开关/渠道改动也能立即验证
+      const data = await api('/notify/run', { method: 'POST', body: { config: collectNotifyForm() } });
       setStatus(el.notifyStatus, data.message || '检查完成', 'ok');
       const preview = await api('/notify/config').then((d) => d.preview).catch(() => null);
       if (preview) renderNotifyPreview(preview);

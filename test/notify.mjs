@@ -1164,6 +1164,72 @@ test('设置页预览：返回「今天」与当前配置下会被提醒的任�
   assert.equal(wider.data.preview.items.length, 2);
 });
 
+test('诊断：「立即检查」对不同类型的空结果给出具体原因，而不是笼统一句话', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'diag1', password: 'secret123' });
+
+  // 场景 A：任务存在但没设到期日（用户最容易踩的情况：日历上的点只代表归属日期）
+  await c.call('POST', '/api/todos', { title: '普通任务', date: localDate() });
+  await c.call('PUT', '/api/notify/config', { enabled: true, channels: ['bark'], leadDays: 1 });
+  const a = await c.call('POST', '/api/notify/run');
+  assert.match(a.data.message, /没有设置到期日/, `实际：${a.data.message}`);
+
+  // 预览同样给出原因
+  const pv = await c.call('GET', '/api/notify/config');
+  assert.match(pv.data.preview.hint, /没有设置到期日/);
+
+  // 场景 B：有到期日但都在窗口外
+  await c.call('POST', '/api/todos', { title: '一周后到期', date: localDate(), dueDate: localDate(7) });
+  const b = await c.call('POST', '/api/notify/run');
+  assert.match(b.data.message, /超出/, `实际：${b.data.message}`);
+  assert.match(b.data.message, /提前 1 天/);
+  const pvb = await c.call('GET', '/api/notify/config');
+  assert.match(pvb.data.preview.hint, /超出/);
+
+  // 场景 C：开关没开
+  await c.call('PUT', '/api/notify/config', { enabled: false, channels: ['bark'], leadDays: 1 });
+  await c.call('POST', '/api/todos', { title: '今天到期', date: localDate(), dueDate: localDate() });
+  const cc = await c.call('POST', '/api/notify/run');
+  assert.match(cc.data.message, /未开启/, `实际：${cc.data.message}`);
+
+  // 场景 D：开了但没选渠道
+  await c.call('PUT', '/api/notify/config', { enabled: true, channels: [], leadDays: 1 });
+  const d = await c.call('POST', '/api/notify/run');
+  assert.match(d.data.message, /推送渠道/, `实际：${d.data.message}`);
+});
+
+test('诊断：任务有到期日且在窗口内时，不附加任何「原因」提示', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'diag2', password: 'secret123' });
+  await c.call('POST', '/api/todos', { title: '今天到期', date: localDate(), dueDate: localDate() });
+  await c.call('PUT', '/api/notify/config', { enabled: true, channels: ['bark'], leadDays: 1 });
+  const pv = await c.call('GET', '/api/notify/config');
+  assert.equal(pv.data.preview.items.length, 1);
+  assert.equal(pv.data.preview.hint, undefined, '有到期任务时不应带 hint');
+});
+
+test('「立即检查」接受当前表单：未保存的开关/渠道修改也能立即验证', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'runform', password: 'secret123' });
+  await c.call('POST', '/api/todos', { title: '明天到期', date: localDate(), dueDate: localDate(1) });
+  // 保存的配置：未开启
+  await c.call('PUT', '/api/notify/config', { enabled: false, channels: ['bark'], leadDays: 1 });
+
+  // 不带表单跑 -> 提示未开启
+  const saved = await c.call('POST', '/api/notify/run');
+  assert.match(saved.data.message, /未开启/);
+
+  // 带上表单（开关已打开）跑 -> 能识别到到期任务（bark 发送失败不影响 due 计数）
+  const fresh = await c.call('POST', '/api/notify/run', {
+    config: { enabled: true, channels: ['bark'], leadDays: 1 },
+  });
+  assert.equal(fresh.data.report.due, 1, `实际：${JSON.stringify(fresh.data)}`);
+  assert.match(fresh.data.message, /有 1 项到期任务/);
+});
+
 test('提前天数：0 = 只在当天提醒，不会提前', async () => {
   const { env, ctx } = makeEnv();
   const c = makeClient(env, ctx);
