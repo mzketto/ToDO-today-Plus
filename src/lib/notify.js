@@ -720,16 +720,34 @@ export async function sendOne(channel, params, message, env = {}) {
       // 常见误填：把 App 里复制的完整推送 URL（https://api.day.app/<key>）当服务器地址。
       // 路径里带着 key 时，请求会打到 /<key>/push，bark-server 按路径格式解析，
       // 把路径段 push 当成正文（通知只剩标题、正文显示 "push"）。
-      // 这里把路径段剥出来当 key 兜底，统一 POST 到 站点根/push。
+      // 这里把路径段剥出来，统一 POST 到 站点根/push。
       const base = new URL(normalizeUrl(p.server || 'https://api.day.app'));
       const pathKey = base.pathname.split('/').filter(Boolean).pop() || '';
       const key = required(p.key || pathKey, 'Bark Device Key', env.NOTIFY_BARK_KEY);
       // 官方 API：POST /push，device_key / title / body 放在 JSON body 里。
       // 不要用 x-bark-key 这类自创请求头 —— 部分 bark-server 不认，回退解析
       // URL 路径时会把路径段当成正文，通知就只剩标题。
-      const payload = { device_key: key, title, body: text, group: p.group || '今日待办' };
-      if (p.sound) payload.sound = p.sound;
-      const result = await postJson(`${base.origin}/push`, payload);
+      const send = (deviceKey) => {
+        const payload = { device_key: deviceKey, title, body: text, group: p.group || '今日待办' };
+        if (p.sound) payload.sound = p.sound;
+        return postJson(`${base.origin}/push`, payload);
+      };
+      let result;
+      try {
+        result = await send(key);
+      } catch (err) {
+        // 已保存的 Key 若失效（服务器报「未知 device token」），而服务器地址路径里
+        // 恰好带着另一个 Key（App 复制的完整 URL），就用它自动重试一次
+        const msg = String(err?.message || err);
+        if (pathKey && pathKey !== key && /device token/i.test(msg)) {
+          result = await send(pathKey);
+        } else if (/device token/i.test(msg)) {
+          throw new HttpError(`Bark 服务器不认识这个 Device Key（${msg.slice(0, 160)}）。`
+            + '请把 Bark App 首页复制的 Key（或完整推送地址末尾那段）填进「Device Key」后保存', 502);
+        } else {
+          throw err;
+        }
+      }
       assertUpstreamOk('bark', result);
       return { channel, detail: 'Bark 已推送' };
     }

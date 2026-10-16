@@ -370,6 +370,43 @@ const SAMPLE = buildMessage([{ title: '交房租', dueDate: '2026-10-19', days: 
   appName: '今日待办', now: new Date('2026-10-16T02:00:00Z'), timeZone: 'Asia/Shanghai',
 });
 
+test('Bark Key 失效自动自救：服务器报未知 device token 时，用地址路径里的 Key 重试一次', async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    const key = JSON.parse(init.body).device_key;
+    if (key === 'staleKey0001') {
+      return new Response(JSON.stringify({
+        code: 400, message: 'failed to get device token: failed to get [staleKey0001] device token from database',
+      }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ code: 200, message: 'success' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    // 已保存的 Key 失效，但服务器地址路径里带着 App 复制的正确 Key → 自动重试成功
+    const r = await sendOne(
+      'bark',
+      { server: 'https://api.day.app/goodKey9999', key: 'staleKey0001' },
+      SAMPLE,
+      {},
+    );
+    assert.equal(r.channel, 'bark');
+    assert.equal(calls.length, 2, '应发起两次请求（失效一次 + 重试一次）');
+    assert.equal(calls[1].url, 'https://api.day.app/push');
+    assert.equal(calls[1].body.device_key, 'goodKey9999', '重试应使用路径段里的 Key');
+
+    // 没有路径 Key 可重试时，报错要直接告诉用户怎么改
+    calls.length = 0;
+    await assert.rejects(
+      () => sendOne('bark', { server: 'https://api.day.app', key: 'staleKey0001' }, SAMPLE, {}),
+      /请把 Bark App 首页复制的 Key/,
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('Bark 自检回显：说明真实请求，且绝不泄漏完整密钥', () => {
   const req = describeRequest('bark', { server: 'https://bark.example.com/', key: 'abcdef123456' }, {});
   assert.equal(req.method, 'POST');
