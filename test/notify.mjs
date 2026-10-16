@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -21,6 +21,7 @@ import { createD1 } from './d1-shim.mjs';
 import {
   CHANNELS,
   CHANNEL_FIELDS,
+  CHANNEL_LABELS,
   normalizeNotifyConfig,
   maskNotifyConfig,
   buildMessage,
@@ -165,6 +166,33 @@ test('渠道清单齐全：主流推送方式都在（含 bark/gotify/wxpusher/�
   // 另外还额外支持了 pushplus 与 ntfy
   assert.ok(CHANNELS.includes('pushplus'));
   assert.ok(CHANNELS.includes('ntfy'));
+});
+
+test('演示模式用的 public/notify-channels.json 与后端定义一致（Git 部署不能漏传/过期）', () => {
+  const file = join(ROOT, 'public/notify-channels.json');
+  assert.ok(existsSync(file), 'public/notify-channels.json 不存在，请执行 npm run gen:catalog');
+  const onDisk = JSON.parse(readFileSync(file, 'utf8'));
+
+  assert.deepEqual(
+    onDisk.map((c) => c.id),
+    CHANNELS.slice(),
+    '渠道清单与后端不一致，请重新执行 npm run gen:catalog',
+  );
+  for (const entry of onDisk) {
+    const spec = CHANNEL_FIELDS[entry.id];
+    assert.equal(entry.label, CHANNEL_LABELS[entry.id], `${entry.id} 中文名不一致`);
+    assert.deepEqual(
+      entry.fields.map((f) => f.key),
+      spec.fields.map((f) => f.key),
+      `${entry.id} 字段清单不一致，请重新执行 npm run gen:catalog`,
+    );
+    // 是否密钥字段会决定前端渲染成 password 还是 text，必须同步
+    assert.deepEqual(
+      entry.fields.map((f) => !!f.secret),
+      spec.fields.map((f) => !!f.secret),
+      `${entry.id} 密钥标记不一致，请重新执行 npm run gen:catalog`,
+    );
+  }
 });
 
 test('每个渠道都提供中文名与字段说明，设置页才能渲染表单', () => {

@@ -2278,7 +2278,7 @@
     const keep = new Set(chosen);
 
     // 移除已取消勾选的渠道面板，保留其它面板里用户正在输入的内容
-    Array.from(el.notifyParams.querySelectorAll('[data-channel]')).forEach((node) => {
+    Array.from(el.notifyParams.querySelectorAll('.provider-panel[data-channel]')).forEach((node) => {
       if (!keep.has(node.dataset.channel)) node.remove();
     });
 
@@ -2393,7 +2393,8 @@
 
   function collectNotifyForm() {
     const params = {};
-    el.notifyParams.querySelectorAll('[data-channel]').forEach((box) => {
+    // 只选面板容器：字段输入框上也带 data-channel，不能一起选中（会把每个输入框当空面板）
+    el.notifyParams.querySelectorAll('.provider-panel[data-channel]').forEach((box) => {
       const id = box.dataset.channel;
       const entry = {};
       box.querySelectorAll('[data-key]').forEach((input) => {

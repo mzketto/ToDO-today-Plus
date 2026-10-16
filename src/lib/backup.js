@@ -770,6 +770,13 @@ export async function readCronStatus(env) {
   }
 }
 
+/**
+ * 解析 Cron 表达式，返回固定的 5 字段列表，供 /api/health 自查用。
+ * 该配置本身写在 wrangler.jsonc，部署后无法从 Worker 里读取，
+ * 因此这里只做「两侧写法是否一致」的静态对照（见 test/deploy-parity.mjs）。
+ */
+export const CRON_SCHEDULE = ['*/5 * * * *'];
+
 /** 取当前时间戳（Cron 的 event.scheduledTime，缺省用当前时间） */
 export function cronNow(event) {
   const ms = Number(event?.scheduledTime);

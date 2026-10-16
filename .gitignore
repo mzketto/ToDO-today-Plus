@@ -1,7 +1,18 @@
+# 依赖与本地环境
 node_modules/
 .wrangler/
 .dev.vars
 .env
-dist/
 *.log
 .DS_Store
+
+# 单文件部署产物：只服务于「网页粘贴」路径，Git 部署不需要；
+# 每次改完前端用 npm run build:dashboard 重新生成即可（不入库避免冲突）
+dist/
+
+# 验收截图
+shots/
+
+# 注意：public/ 绝对不能加进来！
+# Git 自动构建（方案 B）直接读取仓库里的 public/ 目录作为静态资源，
+# 一旦被忽略，线上会白屏或停留在旧版本。

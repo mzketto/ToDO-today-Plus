@@ -11,7 +11,9 @@
     "db:remote": "wrangler d1 execute todo-today --remote --file=./schema.sql",
     "tail": "wrangler tail",
     "build:dashboard": "node scripts/build-dashboard.mjs",
-    "test": "node test/run.mjs && node test/bundle.mjs",
+    "test": "node test/run.mjs && node test/bundle.mjs && node test/notify.mjs && node test/isolation.mjs && node test/idor.mjs && node test/deploy-parity.mjs",
+    "test:ui": "node scripts/smoke-ui.mjs",
+    "gen:catalog": "node scripts/gen-notify-catalog.mjs",
     "check": "node --check src/index.js && node --check public/app.js"
   },
   "devDependencies": {

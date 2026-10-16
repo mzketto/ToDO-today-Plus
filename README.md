@@ -209,6 +209,10 @@ npx wrangler deploy
 
 完成后会输出形如 `https://todo-today.<你的子域>.workers.dev` 的地址，打开注册一个账号即可开始用。
 
+> 上面是**命令行部署**。如果你用 **Git 自动构建（Workers Builds）**，
+> 请对照 [附录 · Git 自动构建的同步清单](#附录--git-自动构建的同步清单) 逐项检查，
+> 那里列出了每次改动需要跟着更新哪些文件。
+
 ---
 
 ## 本地开发
@@ -221,6 +225,9 @@ npm run dev           # 启动 wrangler dev
 打开 <http://localhost:8787>。
 
 > 需要本地也用上 D1 吗？`wrangler dev` 默认就是本地 SQLite 模拟，直接可用，无需真实 `database_id`。
+>
+> 想在本地调渠道密钥，把 `.dev.vars.example` 复制成 `.dev.vars` 再填
+> （`.dev.vars` 已在 `.gitignore` 里，不会被提交）。
 
 ## 跑测试
 
@@ -230,10 +237,11 @@ npm test
 
 - 用 Node 22 内置的 `node:sqlite` 冒充 D1，把 Worker 的 `fetch()` 全流程跑一遍（注册/登录/增删改查/计数/顺延/导入导出/备份配置/到期提醒/多用户隔离…）
 - SigV4 签名部分用 **AWS 官方 `aws-sig-v4-test-suite` 测试向量**做回归，逐字节比对规范请求、待签字符串与最终 Authorization 头
-- 到期提醒单独有 58 个用例：纯函数（时区换算 / 去重 / 掩码）、12 个渠道的请求报文（换掉全局 `fetch` 逐字段断言）、以及端到端流程（建表 / 推送 / 去重 / 失败重试 / Cron 隔离 / 老库降级）
-- UI 冒烟用真实 headless Chrome 走一遍主要交互（`scripts/smoke-ui.mjs`，28 项）
+- 到期提醒单独有 59 个用例：纯函数（时区换算 / 去重 / 掩码）、12 个渠道的请求报文（换掉全局 `fetch` 逐字段断言）、以及端到端流程（建表 / 推送 / 去重 / 失败重试 / Cron 隔离 / 老库降级）
+- **两条部署路径对照**（`test/deploy-parity.mjs`，9 项）：把「Git 自动构建」和「网页粘贴单文件」当两个真实 Worker，各跑一遍完整业务流程并逐条 diff 响应，确保功能不分叉；同时校验静态资源逐字节一致、Cron 表达式一致、演示模式渠道清单不漂移
+- UI 冒烟用真实 headless Chrome 走一遍主要交互（`scripts/smoke-ui.mjs`，30 项）
 
-当前 149 个后端用例 + 28 项 UI 检查全部通过。
+当前 154 个后端用例 + 30 项 UI 检查全部通过。
 
 ---
 
@@ -276,6 +284,13 @@ npm test
 | `ALLOW_REGISTRATION` | 变量 | 设为 `"false"` 可关闭注册（单人自用推荐） |
 | `BACKUP_S3_SECRET_KEY` | 密钥 | S3 Secret Access Key 的兜底值 |
 | `BACKUP_WEBDAV_PASSWORD` | 密钥 | WebDAV 密码的兜底值 |
+| `NOTIFY_BARK_KEY` | 密钥 | Bark Device Key 的兜底值 |
+| `NOTIFY_GOTIFY_TOKEN` | 密钥 | Gotify App Token 的兜底值 |
+| `NOTIFY_WXPUSHER_APPTOKEN` | 密钥 | WxPusher AppToken 的兜底值 |
+| `NOTIFY_TELEGRAM_BOT_TOKEN` | 密钥 | Telegram Bot Token 的兜底值 |
+| `NOTIFY_SERVERCHAN_KEY` | 密钥 | Server 酱 SendKey 的兜底值 |
+| `NOTIFY_PUSHPLUS_TOKEN` | 密钥 | PushPlus Token 的兜底值 |
+| `NOTIFY_RESEND_API_KEY` | 密钥 | 邮件（Resend）API Key 的兜底值 |
 
 页面上填了密钥则优先用页面上的；留空则回落到上面的环境密钥。
 
@@ -311,6 +326,80 @@ npm test
 - 授权：所有 `/api/*`（除健康检查与认证接口）都要求有效会话，且每条 SQL 都带 `user_id` 过滤
 - 密钥：备份密钥写入后**永不回显**给前端，只返回「已配置 / 来自环境变量」的布尔标记
 - XSS：前端所有动态文本走 `textContent`，不拼 HTML
+
+## 附录 · Git 自动构建的同步清单
+
+两种部署方式（网页粘贴 / Git 自动构建）**共用同一份 Worker 代码**，功能完全一致。
+区别只在静态资源怎么分发：
+
+- **网页粘贴**：把 `dist/worker.cloudflare-dashboard.js` 单个文件粘进在线编辑器，
+  前端资源是打包时 base64 内联进去的 → **改完前端必须重新打包再粘贴**。
+- **Git 自动构建**：Workers Builds 直接读仓库，`wrangler.jsonc` 里的 `assets` 指向
+  `public/`，静态文件由 CDN 提供 → **只要 `public/` 推上去了就生效，不用打包**。
+
+### 怎么确认两条路径跑出来是一样的
+
+访问 `/api/health`，`deploy` 字段会自报家门：
+
+```json
+{ "ok": true, "notify": true,
+  "deploy": { "assets": "assets", "cron": ["*/5 * * * *"] } }
+```
+
+- `deploy.assets`：`assets` = 静态资源由 CDN 提供（Git 部署）；`inline` = 由单文件内联表提供（网页粘贴）。
+  这是两条路径**唯一**设计上的差异。
+- `deploy.cron`：定时表达式，两条路径必须相同。
+
+除这两项之外，`test/deploy-parity.mjs` 会把两条路径当两个真实 Worker 各跑一遍
+「注册 → 建待办（含到期日）→ 搜索/标签 → 到期提醒配置/预览/测试/手动跑 → Cron →
+备份配置 → 导出」全流程，并把每一步的响应体逐条 diff。
+**任何一个业务响应出现分叉，测试都会失败**，差异白名单里只有 `health.deploy.assets` 一项。
+
+### 提交前对照检查
+
+| 你改了什么 | Git 自动构建要做的事 |
+|---|---|
+| `src/**`（后端逻辑、新增渠道） | 直接 push，构建会自动部署 |
+| `public/**`（前端） | 直接 push。**注意 `public/notify-channels.json` 也要一起提交** |
+| 渠道字段定义（`CHANNEL_FIELDS`） | 先 `npm run gen:catalog` 重新生成 `public/notify-channels.json`，再连它一起 push |
+| `schema.sql` | 需要**手动**在 D1 上执行一次（见下） |
+| `wrangler.jsonc` | 直接 push；改了 `crons` / 绑定后会自动重新部署 |
+| 新增 `src/lib/*.js` | 如果只走 Git 部署则无需额外操作；但为了让 `dist/` 单文件版也能构建，记得加进 `scripts/build-dashboard.mjs` 的 `MODULES` |
+
+### 必须手动做的两件事
+
+**1. 建表（新增了 `notifications` / `notify_log` 两张表）**
+
+Git 构建只部署代码，**不会自动建表**。到控制台
+**存储和数据库 › D1 SQL Database › todo-today › Console** 把最新的
+`schema.sql` 全文粘进去执行：
+
+```bash
+# 或者用命令行
+npm run db:remote
+```
+
+验证：访问 `https://你的地址/api/health?check=1`，看到
+`"missing":[]` 且表清单里有 `notifications`、`notify_log` 才算齐了。
+
+**2. Cron Trigger（网页粘贴部署才需要）**
+
+Git 部署的 `crons` 来自 `wrangler.jsonc`，已经在仓库里配好了 `*/5 * * * *`，**无需手动添加**。
+（网页粘贴部署因为不读 `wrangler.jsonc`，必须到
+*Settings › Triggers › Cron Triggers* 手动加。）
+
+### 隔离与数据一致性
+
+Git 部署不影响多账号隔离：隔离由服务端会话校验 + 所有查询强制带 `user_id` 保证，
+与前端资源怎么分发无关。但请确认 `.gitignore` 里**没有** `public/`——
+如果 `public/` 没被提交，线上会白屏或停在旧版本（一个 `app.js` 改了这个、`index.html` 还是老的）。
+仓库自带的 `.gitignore` 已经只忽略 `node_modules/`、`.wrangler/`、`.dev.vars`、`dist/`。
+
+> `dist/` 被忽略是故意的：单文件产物只服务于「网页粘贴」这条路径，Git 部署不需要它。
+> 如果你两条路径都在用，改完前端记得执行 `npm run build:dashboard` 保持 `dist/` 与 `public/` 同步
+> ——`test/deploy-parity.mjs` 会在两者不一致时直接失败，避免「修了这个没修那个」。
+
+---
 
 ## 常见问题
 

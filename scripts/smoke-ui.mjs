@@ -372,6 +372,35 @@ for (const lead of [30, 14, 7, 3, 2, 1]) {
 }
 check(`提醒预览会按提前天数重算：${previewText.trim().slice(0, 40)}`, previewText.length > 0);
 
+// 16) 回归：勾渠道后填了服务器地址，「发送测试」必须把表单值带上（曾因选择器把输入框当面板，值被清空）
+await evalJs(`(() => {
+  const tag = document.querySelector('#notify-channels .channel-tag[data-channel="gotify"]');
+  tag.querySelector('input').checked = true;
+  tag.classList.add('on');
+  document.getElementById('notify-channels').dispatchEvent(new Event('change', { bubbles: true }));
+})()`);
+await sleep(200);
+await evalJs(`(() => {
+  const input = document.querySelector('#notify-params .provider-panel[data-channel="gotify"] [data-key="server"]');
+  input.value = 'https://gotify.example.com/';
+})()`);
+await evalJs(`document.getElementById('notify-test').click()`);
+await sleep(600);
+const testStatus = await evalJs(`document.getElementById('notify-status').textContent`);
+check(
+  `发送测试会带上表单里的服务器地址：${testStatus.trim().slice(0, 40)}`,
+  !testStatus.includes('完整地址'),
+);
+
+// 再验证 collect 出来的参数确实包含刚填的值
+const collected = await evalJs(`(() => {
+  const panel = document.querySelector('#notify-params .provider-panel[data-channel="gotify"]');
+  const out = {};
+  panel.querySelectorAll('[data-key]').forEach((i) => { out[i.dataset.key] = i.value.trim(); });
+  return JSON.stringify(out);
+})()`);
+check(`渠道面板收集到字段值：${collected}`, collected.includes('gotify.example.com'));
+
 const fetchCount = await evalJs(`window.__fetchLog.length`);
 console.log(results.map(([s, n]) => `${s}  ${n}`).join('\n'));
 console.log(`fetch 调用 ${fetchCount} 次，console 错误 ${consoleErrors.length} 个`);

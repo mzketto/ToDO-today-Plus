@@ -164,6 +164,12 @@ async function route(request, env, ctx, url) {
       r2: !!env.BACKUPS,
       registration: String(env.ALLOW_REGISTRATION ?? 'true').toLowerCase() !== 'false',
       notify: true,
+      // 让两条部署路径可以用同一个 URL 自查：静态资源是 CDN(assets) 给的还是内联表给的、
+      // 定时任务表达式是什么。网页粘贴部署时 assets 不生效，这里会显示 'inline'。
+      deploy: {
+        assets: env.ASSETS ? 'assets' : 'inline',
+        cron: backup.CRON_SCHEDULE,
+      },
     };
     if (url.searchParams.get('check') === '1' && env.DB) {
       payload.schema = await inspectSchema(env);

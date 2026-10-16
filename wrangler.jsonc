@@ -19,8 +19,11 @@
     "enabled": true
   },
 
-  // ===== 定时备份（可选）=====
-  // 每 5 分钟唤醒一次 Worker，只有「配置了定时备份且已到周期」的用户才会真正上传。
+  // ===== 定时任务：备份 + 到期提醒 =====
+  // 每 5 分钟唤醒一次 Worker，同一轮里并行做两件事：
+  //   1) 定时备份：只有「配置了定时备份且已到周期」的用户才会真正上传
+  //   2) 到期提醒：把到期日进入窗口的任务推到用户配置的各个渠道
+  // 只有这一个 Cron，不需要为提醒再建一个。
   // 本地调试定时任务：npx wrangler dev --test-scheduled
   //                然后访问 http://localhost:8787/__scheduled?cron=*/5+*+*+*+*
   "triggers": {
@@ -34,7 +37,7 @@
     {
       "binding": "DB",
       "database_name": "todo-today",
-      "database_id": "placeholder-replace-me"
+      "database_id": "0eb07614-a0b8-412b-a950-01821e98c3b3"
     }
   ],
 
@@ -52,6 +55,15 @@
   // 敏感信息请用密钥，不要写在这里：
   //   npx wrangler secret put BACKUP_S3_SECRET_KEY
   //   npx wrangler secret put BACKUP_WEBDAV_PASSWORD
+  //   npx wrangler secret put NOTIFY_BARK_KEY
+  //   npx wrangler secret put NOTIFY_GOTIFY_TOKEN
+  //   npx wrangler secret put NOTIFY_WXPUSHER_APPTOKEN
+  //   npx wrangler secret put NOTIFY_TELEGRAM_BOT_TOKEN
+  //   npx wrangler secret put NOTIFY_SERVERCHAN_KEY
+  //   npx wrangler secret put NOTIFY_PUSHPLUS_TOKEN
+  //   npx wrangler secret put NOTIFY_RESEND_API_KEY
+  // 提醒渠道密钥也可以直接填在网页的「到期提醒」面板里（会存进 D1），
+  // 两处都填时以页面为准，环境变量只作兜底。
   "vars": {
     "APP_NAME": "今日待办",
     "ALLOW_REGISTRATION": "true"

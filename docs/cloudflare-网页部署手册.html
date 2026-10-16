@@ -686,6 +686,13 @@
     <tr><td>变量</td><td><code>ALLOW_REGISTRATION</code></td><td>Worker › Settings › Variables and Secrets</td></tr>
     <tr><td>机密（可选）</td><td><code>BACKUP_S3_SECRET_KEY</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
     <tr><td>机密（可选）</td><td><code>BACKUP_WEBDAV_PASSWORD</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
+    <tr><td>机密（可选）</td><td><code>NOTIFY_BARK_KEY</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
+    <tr><td>机密（可选）</td><td><code>NOTIFY_GOTIFY_TOKEN</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
+    <tr><td>机密（可选）</td><td><code>NOTIFY_WXPUSHER_APPTOKEN</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
+    <tr><td>机密（可选）</td><td><code>NOTIFY_TELEGRAM_BOT_TOKEN</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
+    <tr><td>机密（可选）</td><td><code>NOTIFY_SERVERCHAN_KEY</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
+    <tr><td>机密（可选）</td><td><code>NOTIFY_PUSHPLUS_TOKEN</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
+    <tr><td>机密（可选）</td><td><code>NOTIFY_RESEND_API_KEY</code></td><td>Worker › Settings › Variables and Secrets（加密）</td></tr>
     <tr><td>数据库名</td><td><code>todo-today</code></td><td>D1 SQL 数据库</td></tr>
     <tr><td>存储桶名（可选）</td><td><code>todo-backups</code></td><td>R2 对象存储</td></tr>
   </tbody>
@@ -731,6 +738,20 @@
     <td>待办功能 / 日期选择 / 加载速度</td>
     <td colspan="2" class="same">完全一致</td>
   </tr>
+  <tr>
+    <td>到期提醒（12 种推送渠道）</td>
+    <td colspan="2" class="same">完全一致（都靠下面的 Cron Trigger）</td>
+  </tr>
+  <tr>
+    <td>定时任务（Cron Trigger）</td>
+    <td>需手动到 <em>Settings › Triggers</em> 添加 <code>*/5 * * * *</code></td>
+    <td><code>wrangler.jsonc</code> 里已配好，自动生效</td>
+  </tr>
+  <tr>
+    <td>部署后自查</td>
+    <td colspan="2" class="same">访问 <code>/api/health</code>，其中 <code>deploy.assets</code>
+      会告诉你静态资源是 <code>assets</code>（CDN）还是 <code>inline</code>（内联）来的</td>
+  </tr>
 </table>
 <p>因为后端是同一个文件，<strong>「不同账号各自管理自己的待办」这件事在两条路径上都成立</strong>——
 它由 Worker 里的会话校验和 <code>user_id</code> 过滤保证，与前端怎么分发无关。
@@ -741,12 +762,48 @@
      如果 <code>.gitignore</code> 里误写了 <code>public/</code>，或者提交时漏掉了这几个文件，
      部署出来的网站会是空白页或者旧版本。</p>
   <p>确认方法：在 GitHub 仓库页面能看到 <code>public/app.js</code>、<code>public/index.html</code>、
-     <code>public/style.css</code> 这三个文件。改完前端后，记得 <code>git add public/</code> 一并提交。</p>
+     <code>public/style.css</code>、<code>public/notify-channels.json</code> 这几个文件。
+     改完前端后，记得 <code>git add public/</code> 一并提交。</p>
 </div>
 <div class="callout note">
   <span class="t">切换方案时不用重新建库</span>
   两个方案连的是同一个 D1 数据库，账号和待办数据都在库里。
   无论从 A 换到 B 还是反过来，已有账号和待办都原样保留，直接登录即可。
+</div>
+
+<h3>方案 B 必须手动做的两件事</h3>
+<p>Git 构建只负责<strong>部署代码</strong>，下面两件事它不会替你做：</p>
+<div class="step">
+  <h3 id="b1-在-d1-上建表"><span class="num">1</span>在 D1 上执行建表语句</h3>
+  <p class="goal">目标：把 <code>notifications</code>、<code>notify_log</code> 等表补齐。</p>
+  <ol class="acts">
+    <li>控制台进入 <span class="path">存储和数据库<span class="sep">›</span>D1 SQL Database<span class="sep">›</span>todo-today<span class="sep">›</span>Console</span>。</li>
+    <li>把仓库里最新的 <code>schema.sql</code> 全文粘进去，点 <strong>Execute / 执行</strong>。</li>
+    <li>访问 <code>https://你的地址/api/health?check=1</code> 验证，
+        看到 <code>"missing":[]</code> 且表清单包含 <code>notifications</code>、<code>notify_log</code>。</li>
+  </ol>
+  <div class="callout warn">
+    <span class="t">每次都一样：改了 schema.sql 就要手动跑一次</span>
+    Workers Builds 不会执行 SQL。如果跳过这步，打开「到期提醒」时会看到
+    <code>no such table</code> 之类的报错。重复执行是安全的（唯一例外是补
+    <code>due_date</code> 列的 <code>ALTER TABLE</code> 会提示 <em>duplicate column name</em>，忽略即可）。
+  </div>
+</div>
+<div class="step">
+  <h3 id="b2-cron-已经配好"><span class="num">2</span>Cron Trigger —— 已经配好了，不用管</h3>
+  <p class="goal">目标：确认定时任务在跑（到期提醒和定时备份都靠它）。</p>
+  <ol class="acts">
+    <li>仓库里的 <code>wrangler.jsonc</code> 已声明 <code>"crons": ["*/5 * * * *"]</code>，
+        Git 部署会自动生效，<strong>不需要</strong>去控制台手动添加。</li>
+    <li>验证：打开站点 → 右上角头像 → <strong>到期提醒</strong>，
+        面板底部应显示「定时任务运行正常（每 5 分钟检查一次）」。</li>
+  </ol>
+  <div class="callout tip">
+    <span class="t">和方案 A 的唯一区别</span>
+    方案 A（网页粘贴）因为不读 <code>wrangler.jsonc</code>，必须到
+    <em>Settings › Triggers › Cron Triggers</em> 手动加 <code>*/5 * * * *</code>；
+    方案 B 因为是配置文件驱动的，这一步自动完成。
+  </div>
 </div>
 
 <hr />
