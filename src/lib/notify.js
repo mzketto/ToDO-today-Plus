@@ -90,7 +90,7 @@ const EMPTY_NOTIFY_CONFIG = {
 export const CHANNEL_FIELDS = {
   bark: {
     fields: [
-      { key: 'server', label: '服务器地址', placeholder: 'https://api.day.app（自建可改）', optional: true },
+      { key: 'server', label: '服务器地址', placeholder: 'https://api.day.app（自建可改；粘贴 App 里复制的完整地址也行）', optional: true },
       { key: 'key', label: 'Device Key', placeholder: '在 Bark App 首页复制', secret: true },
       { key: 'group', label: '分组', placeholder: '可留空', optional: true },
       { key: 'sound', label: '铃声', placeholder: '可留空，如 bell', optional: true },
@@ -717,14 +717,19 @@ export async function sendOne(channel, params, message, env = {}) {
   switch (channel) {
     /* ---------------- Bark：POST /push ---------------- */
     case 'bark': {
-      const server = normalizeUrl(p.server || 'https://api.day.app');
-      const key = required(p.key, 'Bark Device Key', env.NOTIFY_BARK_KEY);
+      // 常见误填：把 App 里复制的完整推送 URL（https://api.day.app/<key>）当服务器地址。
+      // 路径里带着 key 时，请求会打到 /<key>/push，bark-server 按路径格式解析，
+      // 把路径段 push 当成正文（通知只剩标题、正文显示 "push"）。
+      // 这里把路径段剥出来当 key 兜底，统一 POST 到 站点根/push。
+      const base = new URL(normalizeUrl(p.server || 'https://api.day.app'));
+      const pathKey = base.pathname.split('/').filter(Boolean).pop() || '';
+      const key = required(p.key || pathKey, 'Bark Device Key', env.NOTIFY_BARK_KEY);
       // 官方 API：POST /push，device_key / title / body 放在 JSON body 里。
       // 不要用 x-bark-key 这类自创请求头 —— 部分 bark-server 不认，回退解析
-      // URL 路径时会把路径段当成正文，通知就只剩标题（正文显示成 "push"）。
+      // URL 路径时会把路径段当成正文，通知就只剩标题。
       const payload = { device_key: key, title, body: text, group: p.group || '今日待办' };
       if (p.sound) payload.sound = p.sound;
-      const result = await postJson(`${server}/push`, payload);
+      const result = await postJson(`${base.origin}/push`, payload);
       assertUpstreamOk('bark', result);
       return { channel, detail: 'Bark 已推送' };
     }
@@ -1062,15 +1067,24 @@ export async function testChannel(env, channel, config) {
 export function describeRequest(channel, params = {}, env = {}) {
   if (channel !== 'bark') return null;
   const p = params || {};
-  const server = notify_pickString(p.server) || 'https://api.day.app';
-  const key = notify_pickString(p.key) || notify_pickString(env.NOTIFY_BARK_KEY);
+  // 与 sendOne 的 bark 分支同款归一化：服务器地址里可能混着 device key
+  let server = 'https://api.day.app';
+  let pathKey = '';
+  try {
+    const u = new URL(notify_pickString(p.server) || server);
+    const segs = u.pathname.split('/').filter(Boolean);
+    pathKey = segs.pop() || '';
+    server = u.origin;
+  } catch { /* 保持默认 */ }
+  const key = notify_pickString(p.key) || pathKey || notify_pickString(env.NOTIFY_BARK_KEY);
   return {
     method: 'POST',
-    url: `${server.replace(/\/+$/, '')}/push`,
+    url: `${server}/push`,
     contentType: 'application/json; charset=utf-8',
     bodyKeys: ['device_key', 'title', 'body', 'group'],
     deviceKeyTail: key ? `…${key.slice(-4)}` : '(未配置)',
-    note: 'device_key 放在 JSON body 里（Bark 官方 API）；不使用自定义请求头',
+    serverHadKey: !!pathKey,
+    note: 'device_key 放在 JSON body 里（Bark 官方 API）；服务器地址里的路径段会被剥出来当 Key',
   };
 }
 

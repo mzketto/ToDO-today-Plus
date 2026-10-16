@@ -400,6 +400,17 @@ test('Bark：POST /push，Device Key 按 官方格式 放 JSON body（device_key
     // 自建服务器
     await sendOne('bark', { server: 'https://bark.example.com/', key: 'k' }, SAMPLE, {});
     assert.equal(m.last().url, 'https://bark.example.com/push', '自定义服务器应生效且去掉尾部斜杠');
+
+    // 常见误填：把 App 里复制的完整推送 URL（带 key 的路径）当服务器地址——
+    // 应剥出路径段当 key、打到站点根 /push，而不是 /<key>/push（那会让正文变成 "push"）
+    await sendOne('bark', { server: 'https://api.day.app/HCq3XxjZl4uCLnItSpLE7', key: 'realKey8899' }, SAMPLE, {});
+    assert.equal(m.last().url, 'https://api.day.app/push', '路径里混入的 key 应被剥掉');
+    assert.equal(m.last().json.device_key, 'realKey8899', '优先用 Device Key 字段里的值');
+
+    // Device Key 留空时，路径段可作为兜底 key
+    await sendOne('bark', { server: 'https://api.day.app/pathKey777' }, SAMPLE, {});
+    assert.equal(m.last().url, 'https://api.day.app/push');
+    assert.equal(m.last().json.device_key, 'pathKey777', '路径段应作为 key 兜底');
   } finally { m.restore(); }
 });
 

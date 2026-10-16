@@ -6,7 +6,7 @@
       {
         "key": "server",
         "label": "服务器地址",
-        "placeholder": "https://api.day.app（自建可改）",
+        "placeholder": "https://api.day.app（自建可改；粘贴 App 里复制的完整地址也行）",
         "optional": true
       },
       {
