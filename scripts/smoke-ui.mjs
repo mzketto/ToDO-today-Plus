@@ -284,9 +284,34 @@ check(
   !!dueChip && dueChip.text.includes('明天') && dueChip.cls.includes('due-soon'),
 );
 
-// 提交后到期日按钮应自动复位
-const dueReset = await evalJs(`!document.getElementById('composer-due').classList.contains('set')`);
-check(`提交后到期日自动复位`, dueReset);
+// 提交后到期日应复位为「默认跟随任务所属日期」
+const dueReset = await evalJs(`(() => {
+  const b = document.getElementById('composer-due');
+  return {
+    set: b.classList.contains('set'),
+    def: b.classList.contains('is-default'),
+    text: document.getElementById('composer-due-text').textContent,
+  };
+})()`);
+check(`提交后到期日复位为跟随所属日期：${dueReset.text}`, dueReset.set && dueReset.def);
+
+// 完全不碰到期日按钮，新任务的到期日也应默认等于所属日期（今天）
+await evalJs(`(() => {
+  const i = document.getElementById('add-input');
+  i.value = '默认就有到期日';
+  document.getElementById('add-form').dispatchEvent(new Event('submit', { cancelable: true }));
+})()`);
+await sleep(600);
+const defaultChip = await evalJs(`(() => {
+  const card = [...document.querySelectorAll('.memo')].find((c) => c.textContent.includes('默认就有到期日'));
+  if (!card) return null;
+  const chip = card.querySelector('.todo-due');
+  return chip ? { text: chip.textContent, cls: chip.className } : null;
+})()`);
+check(
+  `不设到期日的新任务默认带徽标：${defaultChip?.text}`,
+  !!defaultChip && defaultChip.text.includes('今天') && defaultChip.cls.includes('is-default'),
+);
 
 // 14) 点卡片徽标改到期日（选到今天 -> 变成「今天到期」）
 await evalJs(`(() => {
@@ -317,12 +342,17 @@ const notifyPanel = await evalJs(`(() => {
   return {
     tags: tags.length,
     lead: document.getElementById('notify-lead')?.value,
+    interval: document.getElementById('notify-interval')?.value,
     bodyOff: document.getElementById('notify-body')?.classList.contains('is-off'),
   };
 })()`);
 check(
   `提醒面板渲染出渠道清单：${notifyPanel.tags} 个渠道`,
   notifyPanel.tags >= 10 && notifyPanel.bodyOff === true,   // 默认未启用 -> 面板半灰
+);
+check(
+  `检查频率字段存在且默认 5 分钟：${notifyPanel.interval}`,
+  notifyPanel.interval === '5',
 );
 
 // 勾一个渠道，应动态长出参数表单

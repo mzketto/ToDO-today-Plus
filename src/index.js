@@ -281,6 +281,19 @@ async function route(request, env, ctx, url) {
     return fail('未知的批量操作');
   }
 
+  // 一次性把「没设到期日」的历史任务补成所属日期（只填空值，不覆盖已有设置）
+  if (path === '/api/todos/backfill-due' && method === 'POST') {
+    const user = await auth.requireUser(request, env);
+    const res = await todos.backfillDueDates(env, user.id);
+    scheduleAutoBackup(ctx, env, user, request.cf?.timezone);
+    return ok({
+      ...res,
+      message: res.updated
+        ? `已把 ${res.updated} 条任务的到期日补成所属日期`
+        : '没有需要补齐的任务',
+    });
+  }
+
   if (path === '/api/todos/stats' && method === 'GET') {
     const user = await auth.requireUser(request, env);
     const days = url.searchParams.get('days');

@@ -213,6 +213,15 @@ test('配置归一化：提前天数被夹到 0~365，非法值回退', () => {
   assert.equal(normalizeNotifyConfig({ leadDays: 'abc' }, { leadDays: 7 }).leadDays, 7);
 });
 
+test('配置归一化：检查频率默认 5 分钟，夹到 5~1440', () => {
+  assert.equal(normalizeNotifyConfig({}, {}).checkInterval, 5, '缺省 = 每 5 分钟');
+  assert.equal(normalizeNotifyConfig({ checkInterval: 30 }, {}).checkInterval, 30);
+  assert.equal(normalizeNotifyConfig({ checkInterval: 1 }, {}).checkInterval, 5, '低于 5 分钟没意义，夹回 5');
+  assert.equal(normalizeNotifyConfig({ checkInterval: 9999 }, {}).checkInterval, 1440, '上限一天');
+  assert.equal(normalizeNotifyConfig({ checkInterval: 'abc' }, { checkInterval: 15 }).checkInterval, 15, '非法值沿用旧值');
+  assert.equal(normalizeNotifyConfig({ checkInterval: 7.6 }, {}).checkInterval, 8, '小数四舍五入');
+});
+
 test('配置归一化：未知渠道被过滤掉，时间格式非法则沿用旧值', () => {
   const cfg = normalizeNotifyConfig(
     { channels: ['bark', 'not-a-channel', 'telegram', 'telegram'], time: '25:99' },
@@ -765,26 +774,31 @@ test('端到端：设了到期日的任务，到点后「立即检查」会把�
     },
   });
 
-  // 明天到期（在 2 天窗口内）、10 天后到期（窗口外）、以及不设到期日的
+  // 明天到期（在 2 天窗口内）、10 天后到期（窗口外）、
+  // 显式不要到期日（dueDate 传空串）、以及不传 dueDate（默认等于所属日期 = 今天，也在窗口内）
   await c.call('POST', '/api/todos', { title: '明天要交的活', date: localDate(), dueDate: localDate(1) });
   await c.call('POST', '/api/todos', { title: '很久以后', date: localDate(), dueDate: localDate(10) });
-  await c.call('POST', '/api/todos', { title: '没有到期日', date: localDate() });
+  await c.call('POST', '/api/todos', { title: '不要到期日', date: localDate(), dueDate: '' });
+  const auto = await c.call('POST', '/api/todos', { title: '不传到期的活', date: localDate() });
+  assert.equal(auto.data.todo.dueDate, localDate(), '不传 dueDate 时到期日应默认等于所属日期');
 
   const m = installFetchMock();
   try {
     const run = await c.call('POST', '/api/notify/run');
     assert.equal(run.status, 200);
-    assert.equal(run.data.report.due, 1, '只有「明天要交的活」在提醒窗口内');
-    assert.equal(run.data.report.sent, 2, '两个渠道各推一次');
+    assert.equal(run.data.report.due, 2, '窗口内应有 2 条：明天到期的 + 默认今天到期的');
+    assert.equal(run.data.report.sent, 2, '同一渠道的多条任务合并成一条消息，两个渠道各推一次');
 
     const bark = m.byHost('api.day.app');
     const wecom = m.byHost('qyapi.weixin.qq.com');
     assert.equal(bark.length, 1);
     assert.equal(wecom.length, 1);
-    assert.match(bark[0].json.body, /明天要交的活/);
-    assert.ok(!bark[0].json.body.includes('很久以后'), '窗口外的任务不应出现');
-    assert.ok(!bark[0].json.body.includes('没有到期日'), '没设到期日的任务不应出现');
-    assert.match(bark[0].json.body, /明天到期/);
+    const bodies = bark.map((r) => r.json.body).join('\n');
+    assert.match(bodies, /明天要交的活/);
+    assert.match(bodies, /不传到期的活/, '默认到期日 = 所属日期，也应被提醒');
+    assert.ok(!bodies.includes('很久以后'), '窗口外的任务不应出现');
+    assert.ok(!bodies.includes('不要到期日'), '显式清空到期日的任务不应出现');
+    assert.match(bodies, /明天到期/);
   } finally { m.restore(); }
 });
 
@@ -1020,6 +1034,61 @@ test('Cron：只给开启了提醒的用户推送，且与定时备份互不影�
   } finally { m.restore(); }
 });
 
+test('检查频率：Cron 尊重用户自选的检查间隔，默认每 5 分钟一次', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'interval1', password: 'secret123' });
+  await c.call('PUT', '/api/notify/config', {
+    enabled: true, channels: ['bark'], leadDays: 1, time: '00:00', tz: 'UTC',
+    checkInterval: 30,                       // 调成 30 分钟检查一次
+    params: { bark: { key: 'k' } },
+  });
+  await c.call('POST', '/api/todos', { title: '今天到期的任务', date: localDate(), dueDate: localDate(0) });
+
+  const m = installFetchMock();
+  try {
+    // 第一轮：从没检查过，立即检查并推送
+    const r1 = await worker.scheduled({ scheduledTime: Date.now() }, env, { waitUntil: (p) => p });
+    assert.equal(r1.notify.gated, 0, '第一轮不应被门控拦下');
+    assert.equal(r1.notify.sent, 1);
+    assert.equal(m.byHost('api.day.app').length, 1);
+
+    // 第二轮（几秒后）：距上次检查远小于 30 分钟 → 被门控跳过
+    const r2 = await worker.scheduled({ scheduledTime: Date.now() + 10_000 }, env, { waitUntil: (p) => p });
+    assert.equal(r2.notify.gated, 1, '检查间隔内不应重复检查');
+    assert.equal(r2.notify.sent, 0);
+    assert.equal(m.byHost('api.day.app').length, 1, '门控期间不应发消息');
+
+    // 把 last_scan 拨回 31 分钟前 → 又到了检查时间
+    await env.DB.prepare('UPDATE notifications SET last_scan = last_scan - 1860').run();
+    const r3 = await worker.scheduled({ scheduledTime: Date.now() + 20_000 }, env, { waitUntil: (p) => p });
+    assert.equal(r3.notify.gated, 0, '超过检查间隔后应放行');
+    // 去重日志保证同一任务不重复推，sent 仍是 0 是正常行为
+    assert.equal(r3.notify.sent, 0);
+    assert.equal(m.byHost('api.day.app').length, 1);
+  } finally { m.restore(); }
+});
+
+test('检查频率：默认 5 分钟时，下一轮 Cron 不被门控误拦（容差生效）', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'interval2', password: 'secret123' });
+  // 不传 checkInterval → 默认 5 分钟，与 Cron 周期一致，每轮都应放行
+  await c.call('PUT', '/api/notify/config', {
+    enabled: true, channels: ['bark'], leadDays: 1, time: '00:00', tz: 'UTC',
+    params: { bark: { key: 'k' } },
+  });
+  await c.call('POST', '/api/todos', { title: '今天到期', date: localDate(), dueDate: localDate(0) });
+
+  const m = installFetchMock();
+  try {
+    await worker.scheduled({ scheduledTime: Date.now() }, env, { waitUntil: (p) => p });
+    // 恰好 5 分钟后（Cloudflare Cron 的名义周期），30 秒容差应放行
+    const r2 = await worker.scheduled({ scheduledTime: Date.now() + 300_000 }, env, { waitUntil: (p) => p });
+    assert.equal(r2.notify.gated, 0, '默认周期下不应被门控误拦');
+  } finally { m.restore(); }
+});
+
 test('Cron：通知配置坏了不影响其它用户，也不会抛出去', async () => {
   const { env, ctx, db } = makeEnv();
   const good = makeClient(env, ctx);
@@ -1114,7 +1183,12 @@ test('备份兼容：旧备份（无 dueDate 字段）仍能导入，且不会�
   assert.equal(res.data.result.inserted, 2);
 
   const list = await c.call('GET', `/api/todos?date=${localDate()}`);
-  assert.ok(list.data.todos.every((t) => t.dueDate === null), '缺失或非法到期日都应归一为 null');
+  const byTitle = Object.fromEntries(list.data.todos.map((t) => [t.title, t]));
+  assert.equal(
+    byTitle['老数据没有到期日'].dueDate, localDate(),
+    '老备份缺 dueDate 字段：按所属日期补上（与新任务默认规则一致）',
+  );
+  assert.equal(byTitle['到期日格式不对'].dueDate, null, '非法到期日当作没有');
 });
 
 test('老库兼容：todos 表没有 due_date 列时，提醒功能安全降级不报错', async () => {
@@ -1169,15 +1243,19 @@ test('诊断：「立即检查」对不同类型的空结果给出具体原因�
   const c = makeClient(env, ctx);
   await c.call('POST', '/api/auth/register', { username: 'diag1', password: 'secret123' });
 
-  // 场景 A：任务存在但没设到期日（用户最容易踩的情况：日历上的点只代表归属日期）
-  await c.call('POST', '/api/todos', { title: '普通任务', date: localDate() });
+  // 场景 A：任务存在但到期日是空的（规则上线前的历史数据 = NULL；
+  // 用户显式清空的空串不算，因为它代表「明确不要提醒」）
+  const plain = await c.call('POST', '/api/todos', { title: '普通任务', date: localDate(), dueDate: '' });
+  await env.DB.prepare('UPDATE todos SET due_date = NULL WHERE id = ?').bind(plain.data.todo.id).run();
   await c.call('PUT', '/api/notify/config', { enabled: true, channels: ['bark'], leadDays: 1 });
   const a = await c.call('POST', '/api/notify/run');
-  assert.match(a.data.message, /没有设置到期日/, `实际：${a.data.message}`);
+  assert.match(a.data.message, /到期日为空/, `实际：${a.data.message}`);
+  assert.match(a.data.message, /补齐到期日/, '应引导用户一键补齐');
 
   // 预览同样给出原因
   const pv = await c.call('GET', '/api/notify/config');
-  assert.match(pv.data.preview.hint, /没有设置到期日/);
+  assert.match(pv.data.preview.hint, /到期日为空/);
+  assert.equal(pv.data.preview.missingDue, 1, 'preview 应带上待补齐条数');
 
   // 场景 B：有到期日但都在窗口外
   await c.call('POST', '/api/todos', { title: '一周后到期', date: localDate(), dueDate: localDate(7) });
@@ -1208,6 +1286,86 @@ test('诊断：任务有到期日且在窗口内时，不附加任何「原因�
   const pv = await c.call('GET', '/api/notify/config');
   assert.equal(pv.data.preview.items.length, 1);
   assert.equal(pv.data.preview.hint, undefined, '有到期任务时不应带 hint');
+});
+
+test('默认到期日：不传 dueDate 时等于所属日期，显式传空串才是「不要到期日」', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'due1', password: 'secret123' });
+
+  // 10-19 的待办，到期日就是 10-19
+  const auto = await c.call('POST', '/api/todos', { title: '默认到期', date: localDate(3) });
+  assert.equal(auto.data.todo.dueDate, localDate(3), '到期日应等于任务所属日期');
+
+  // 显式清空 = 这条任务不参与提醒
+  const off = await c.call('POST', '/api/todos', { title: '不要到期日', date: localDate(3), dueDate: '' });
+  assert.equal(off.data.todo.dueDate, null, '空串应归一成 null');
+
+  // 移动归属日期时，默认态（到期日 == 所属日期）的到期日跟着走
+  const move = await c.call('PATCH', `/api/todos/${auto.data.todo.id}`, { date: localDate(5) });
+  assert.equal(move.data.todo.dueDate, localDate(5), '默认态到期日应跟随所属日期一起移动');
+
+  // 手动改过到期日的，再移动归属日期时不能被动
+  await c.call('PATCH', `/api/todos/${auto.data.todo.id}`, { dueDate: localDate(9) });
+  const move2 = await c.call('PATCH', `/api/todos/${auto.data.todo.id}`, { date: localDate(6) });
+  assert.equal(move2.data.todo.dueDate, localDate(9), '手动设过的到期日不应被覆盖');
+});
+
+test('顺延未完成任务时，默认态的到期日一起顺延，手动改过的不动', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'carrydue', password: 'secret123' });
+
+  const a = await c.call('POST', '/api/todos', { title: '昨天没做完', date: localDate(-1) });          // 默认态
+  const b = await c.call('POST', '/api/todos', { title: '手动改过', date: localDate(-1), dueDate: localDate(-1) });
+  await c.call('PATCH', `/api/todos/${b.data.todo.id}`, { dueDate: localDate(9) });                     // 手动改到 9 天后
+
+  const res = await c.call('POST', '/api/todos/batch', { action: 'carry-over', date: localDate() });
+  assert.equal(res.data.moved, 2);
+
+  const list = await c.call('GET', `/api/todos?date=${localDate()}`);
+  const byTitle = Object.fromEntries(list.data.todos.map((t) => [t.title, t]));
+  assert.equal(byTitle['昨天没做完'].dueDate, localDate(), '默认态到期日应跟着顺延到今天');
+  assert.equal(byTitle['手动改过'].dueDate, localDate(9), '手动设过的到期日不应被顺延改掉');
+});
+
+test('历史数据补齐：把「从没设过到期日」的任务补成所属日期，不动显式清空的', async () => {
+  const { env, ctx } = makeEnv();
+  const c = makeClient(env, ctx);
+  await c.call('POST', '/api/auth/register', { username: 'backfill1', password: 'secret123' });
+
+  const a = await c.call('POST', '/api/todos', { title: '历史任务A', date: localDate(-1), dueDate: '' });
+  const b = await c.call('POST', '/api/todos', { title: '历史任务B', date: localDate(-2), dueDate: '' });
+  await c.call('POST', '/api/todos', { title: '明确不要到期日', date: localDate(-3), dueDate: '' });
+  await c.call('POST', '/api/todos', { title: '正常任务', date: localDate(2), dueDate: localDate(7) });
+
+  // 模拟「默认到期日」规则上线前的历史数据：due_date 是 NULL（而不是空串）
+  await env.DB.prepare('UPDATE todos SET due_date = NULL WHERE id IN (?, ?)')
+    .bind(a.data.todo.id, b.data.todo.id)
+    .run();
+
+  const before = await c.call('GET', '/api/notify/config');
+  assert.equal(before.data.preview.missingDue, 2, '只统计从没设过到期日的任务，不含显式清空的');
+
+  const res = await c.call('POST', '/api/todos/backfill-due');
+  assert.equal(res.status, 200);
+  assert.equal(res.data.updated, 2);
+  assert.match(res.data.message, /已把 2 条任务/);
+
+  // 补齐后到期日 = 所属日期
+  const listA = await c.call('GET', `/api/todos?date=${localDate(-1)}`);
+  assert.equal(listA.data.todos[0].dueDate, localDate(-1));
+  const listB = await c.call('GET', `/api/todos?date=${localDate(-2)}`);
+  assert.equal(listB.data.todos[0].dueDate, localDate(-2));
+
+  // 已有到期日、以及用户显式清空的都不动
+  const listNormal = await c.call('GET', `/api/todos?date=${localDate(2)}`);
+  assert.equal(listNormal.data.todos[0].dueDate, localDate(7), '已有到期日不应被覆盖');
+  const listOff = await c.call('GET', `/api/todos?date=${localDate(-3)}`);
+  assert.equal(listOff.data.todos[0].dueDate, null, '显式清空的任务不应被补齐');
+
+  const after = await c.call('GET', '/api/notify/config');
+  assert.equal(after.data.preview.missingDue, 0);
 });
 
 test('「立即检查」接受当前表单：未保存的开关/渠道修改也能立即验证', async () => {

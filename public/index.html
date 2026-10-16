@@ -253,8 +253,10 @@
               <input id="notify-lead" type="number" min="0" max="365" step="1" placeholder="1" inputmode="numeric" /></label>
             <label class="field"><span>每天几点后推送</span>
               <input id="notify-time" type="time" /></label>
+            <label class="field"><span>检查频率（分钟）</span>
+              <input id="notify-interval" type="number" min="5" max="1440" step="1" placeholder="5" inputmode="numeric" /></label>
           </div>
-          <p class="hint">提前 0 天 = 只在当天推；定时任务每 5 分钟跑一次，到点后自动发出。</p>
+          <p class="hint">提前 0 天 = 只在当天推。云端定时器最快每 5 分钟醒来一次，检查频率可自行调大（5–1440 分钟，默认 5）；到点后自动发出。</p>
 
           <label class="switch compact">
             <input type="checkbox" id="notify-overdue" />

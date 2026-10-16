@@ -43,13 +43,16 @@ export function normalizeMonth(raw, fallback = null) {
 }
 
 /**
- * 校验「到期日」。与归属日期不同，到期日可以为空（表示不设提醒）。
- * 空值一律归一成 null，写库后配合 SQL 判断是否设置过。
+ * 校验「到期日」。库里有三种状态，要分清楚：
+ *   null      —— 从没设过（本规则上线前的历史数据就是这个状态），可被「补齐到期日」补上
+ *   ''        —— 用户明确不要到期日（在弹层里点了「清空」），补齐时不会被动到
+ *   'YYYY-MM-DD' —— 具体到期日
+ * 新增任务不传 dueDate 时由 createTodo 填成所属日期，不走这里。
  */
 export function normalizeDueDate(raw) {
-  if (raw === null || raw === undefined) return null;
+  if (raw === null || raw === undefined) return '';
   const value = String(raw).trim();
-  if (!value) return null;
+  if (!value) return '';
   if (!DATE_RE.test(value)) throw new HttpError('到期日格式不正确，应为 YYYY-MM-DD');
   const d = new Date(`${value}T00:00:00Z`);
   if (Number.isNaN(d.getTime())) throw new HttpError('到期日无效');
@@ -139,7 +142,10 @@ export async function countByDate(env, userId, date) {
 export async function createTodo(env, userId, { title, date, dueDate }) {
   const text = normalizeTitle(title);
   const day = normalizeDate(date);
-  const due = normalizeDueDate(dueDate);
+  // 到期日默认等于「任务所属日期」：10-16 的待办到期日就是 10-16，
+  // 不用每次手动点按钮，当天该做的事当天就会按提醒配置推送。
+  // 显式传 null / 空字符串表示「这条任务不要到期日」（前端清空到期日时走这里）。
+  const due = dueDate === undefined ? day : normalizeDueDate(dueDate);
   const ts = nowSeconds();
 
   const minRow = await env.DB.prepare(
@@ -162,7 +168,9 @@ export async function createTodo(env, userId, { title, date, dueDate }) {
       .bind(id, userId, text, day, due, order, ts, ts)
       .run();
   } catch (err) {
-    if (due === null && /no such column|has no column/i.test(String(err?.message || err))) {
+    // 老库还没跑过 schema.sql 里的 ALTER TABLE（没有 due_date 列），
+    // 这时退回到不带到期日的写法，保证「新增任务」这件事永远能用。
+    if (/no such column|has no column/i.test(String(err?.message || err))) {
       await env.DB.prepare(
         `INSERT INTO todos (id, user_id, title, done, todo_date, sort_order, created_at, updated_at)
          VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
@@ -179,7 +187,7 @@ export async function createTodo(env, userId, { title, date, dueDate }) {
     title: text,
     done: false,
     date: day,
-    dueDate: due,
+    dueDate: due || null,   // 空串（用户明确不要到期日）对外的表现与「没有到期日」一致
     order,
     createdAt: ts,
     updatedAt: ts,
@@ -204,8 +212,16 @@ export async function updateTodo(env, userId, id, patch = {}) {
     values.push(patch.done ? 1 : 0);
   }
   if ('date' in patch) {
+    const nextDay = normalizeDate(patch.date);
     sets.push('todo_date = ?');
-    values.push(normalizeDate(patch.date));
+    values.push(nextDay);
+    // 到期日默认等于所属日期。若这次没显式改到期日，且当前到期日还停在原所属日期
+    // （说明是默认值、用户没手动改过），就让到期日跟着新日期一起走，
+    // 免得出现「任务挪到明天了，提醒还盯着今天」。
+    if (!('dueDate' in patch) && row.due_date && row.due_date === row.todo_date && row.todo_date !== nextDay) {
+      sets.push('due_date = ?');
+      values.push(nextDay);
+    }
   }
   if ('dueDate' in patch) {
     sets.push('due_date = ?');
@@ -324,6 +340,13 @@ export async function carryOver(env, userId, { from = null, to }) {
   const stmts = rows.map((row) => {
     const nextOrder = order;
     order -= 1;
+    // 到期日默认等于所属日期：顺延未完成任务时，若到期日还停在原所属日期（说明是默认值），
+    // 就一起顺延；被手动改过的到期日保持不动，尊重用户的设置。
+    if (row.due_date && row.due_date === row.todo_date) {
+      return env.DB.prepare(
+        'UPDATE todos SET todo_date = ?, due_date = ?, sort_order = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+      ).bind(target, target, nextOrder, ts, row.id, userId);
+    }
     return env.DB.prepare(
       'UPDATE todos SET todo_date = ?, sort_order = ?, updated_at = ? WHERE id = ? AND user_id = ?',
     ).bind(target, nextOrder, ts, row.id, userId);
@@ -331,6 +354,43 @@ export async function carryOver(env, userId, { from = null, to }) {
 
   await env.DB.batch(stmts);
   return { moved: rows.length };
+}
+
+/* ---------- 到期日：默认值与历史数据补齐 ---------- */
+
+/**
+ * 统计「从没设过到期日」的未完成任务数（due_date IS NULL）。
+ * 只数 NULL：用户点了「清空」的任务存的是空串，代表明确不要提醒，不该被补齐。
+ * 新任务默认到期日 = 所属日期，所以这里查出来的基本都是规则上线前的历史数据。
+ * 老库没有 due_date 列时返回 0。
+ */
+export async function countMissingDue(env, userId) {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM todos
+        WHERE user_id = ? AND done = 0 AND due_date IS NULL`,
+    )
+      .bind(userId)
+      .first();
+    return Number(row?.n || 0);
+  } catch {
+    return 0;   // 老库没有 due_date 列
+  }
+}
+
+/**
+ * 一次性把「从没设过到期日」的历史任务补成所属日期，让它们也能进入提醒范围。
+ * 只填空（NULL），不覆盖已有到期日，也不动用户显式清空（空串）的任务。
+ */
+export async function backfillDueDates(env, userId) {
+  const res = await env.DB.prepare(
+    `UPDATE todos
+        SET due_date = todo_date, updated_at = ?
+      WHERE user_id = ? AND due_date IS NULL`,
+  )
+    .bind(nowSeconds(), userId)
+    .run();
+  return { updated: res?.meta?.changes ?? 0 };
 }
 
 /** 全文搜索（LIKE，转义 %/_），按日期倒序，供前端搜索框使用 */

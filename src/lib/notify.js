@@ -25,6 +25,9 @@
  */
 
 import { HttpError, nowSeconds } from './auth.js';
+// 「没设到期日的未完成任务」统计：新任务默认到期日 = 所属日期，
+// 查出来的基本是历史数据，用来提示用户一键补齐。
+import { countMissingDue } from './todos.js';
 
 /* ============================== 常量 ============================== */
 
@@ -78,6 +81,7 @@ const EMPTY_NOTIFY_CONFIG = {
   includeOverdue: true,     // 是否连「已过期」的一起提醒
   tz: '',                   // 用户时区（Cron 触发时没有请求上下文，用它算「今天」）
   time: '09:00',            // 每天几点之后才推送（本地时间，避免半夜吵人）
+  checkInterval: 5,         // 检查频率（分钟）：云端定时器每 5 分钟醒来，这里控制实际多久检查一次
   lastScan: null,
   params: {},               // 各渠道参数：{ bark: {...}, telegram: {...} }
 };
@@ -322,6 +326,12 @@ export function normalizeNotifyConfig(input = {}, previous = {}) {
     ? notify_pickString(input.time)
     : (previous.time || EMPTY_NOTIFY_CONFIG.time);
 
+  // 检查频率（分钟）：下限 5（云端 Cron 就是最快 5 分钟一次，设更小没意义），上限一天
+  const intervalRaw = Math.round(Number(input.checkInterval));
+  const checkInterval = Number.isFinite(intervalRaw)
+    ? Math.min(Math.max(intervalRaw, 5), 1440)
+    : (previous.checkInterval ?? EMPTY_NOTIFY_CONFIG.checkInterval);
+
   const rawParams = input.params && typeof input.params === 'object' ? input.params : {};
 
   return {
@@ -335,6 +345,7 @@ export function normalizeNotifyConfig(input = {}, previous = {}) {
       : !!input.includeOverdue,
     tz: notify_pickString(input.tz) || notify_pickString(previous.tz) || '',
     time,
+    checkInterval,
     lastScan: previous.lastScan ?? null,
     // 每个渠道单独合并：未提交的渠道保留旧值，提交了但密钥留空则沿用旧密钥
     params: mergeParams(rawParams, prevParams),
@@ -416,6 +427,7 @@ export function maskNotifyConfig(config = EMPTY_NOTIFY_CONFIG, env = {}) {
     includeOverdue: config.includeOverdue !== false,
     tz: config.tz || '',
     time: config.time || EMPTY_NOTIFY_CONFIG.time,
+    checkInterval: config.checkInterval ?? EMPTY_NOTIFY_CONFIG.checkInterval,
     lastScan: config.lastScan ?? null,
     params,
     catalog: CHANNELS.map((c) => ({
@@ -512,27 +524,41 @@ export async function writeNotifyConfig(env, userId, config) {
   return config;
 }
 
-/** 记录扫描时间（顺手记住时区，供 Cron 触发时算「今天」） */
-export async function rememberNotifyMeta(env, userId, config, { timeZone = '', now = nowSeconds() } = {}) {
+/**
+ * 记录扫描时间（顺手记住时区，供 Cron 触发时算「今天」）。
+ * last_scan 是「上次自动检查」的时间戳，驱动用户自选的检查频率门控，
+ * 所以只有定时检查（stampScan = true）才更新它；打开设置页只保存时区，不重置节奏。
+ */
+export async function rememberNotifyMeta(env, userId, config, { timeZone = '', now = nowSeconds(), stampScan = false } = {}) {
   const next = { ...config };
-  let changed = false;
   const tz = notify_pickString(timeZone);
   if (tz && next.tz !== tz) {
     next.tz = tz;
-    changed = true;
-  }
-  if (changed) {
     await writeNotifyConfig(env, userId, next);
   }
+  if (stampScan) {
+    try {
+      await env.DB
+        .prepare('UPDATE notifications SET last_scan = ?, updated_at = ? WHERE user_id = ?')
+        .bind(now, now, userId)
+        .run();
+    } catch {
+      /* 表不存在时忽略 */
+    }
+  }
+  return next;
+}
+
+/** 定时检查结束后盖章：记录「这次检查发生在何时」，供下轮频率门控比较 */
+async function stampLastScan(env, userId, ts) {
   try {
     await env.DB
       .prepare('UPDATE notifications SET last_scan = ?, updated_at = ? WHERE user_id = ?')
-      .bind(now, now, userId)
+      .bind(ts, ts, userId)
       .run();
   } catch {
     /* 表不存在时忽略 */
   }
-  return next;
 }
 
 /* ============================== 消息组装 ============================== */
@@ -1113,7 +1139,12 @@ export async function describeNotifyGap(env, userId, config, { today, leadDays }
     return '';   // 老库没有 due_date 列时不猜原因
   }
   if (!rows.length) {
-    return '当前未完成的任务都没有设置到期日：在新增框的「到期日」按钮或任务卡上的日期徽标里设置后，才会触发提醒';
+    const missing = await countMissingDue(env, userId);
+    if (missing > 0) {
+      return `有 ${missing} 个未完成任务的到期日为空，所以没有可提醒的内容。`
+        + '新任务现在默认按「所属日期」自动设到期日，点下面的「补齐到期日」可以把这些历史任务一次性补上';
+    }
+    return '当前没有未完成的任务，没有可提醒的内容';
   }
 
   const lead = Number.isFinite(leadDays) ? leadDays : (config.leadDays ?? 1);
@@ -1323,17 +1354,19 @@ export async function runScheduledNotify(env, { now = new Date() } = {}) {
   let rows = [];
   try {
     const res = await env.DB.prepare(
-      `SELECT n.user_id AS user_id, n.notify_json AS notify_json, u.username AS username
+      `SELECT n.user_id AS user_id, n.notify_json AS notify_json, n.last_scan AS last_scan,
+              u.username AS username
          FROM notifications n
          JOIN users u ON u.id = n.user_id
         WHERE n.notify_json IS NOT NULL`,
     ).all();
     rows = res.results || [];
   } catch {
-    return { checked: 0, due: 0, sent: 0, failed: [] };   // 表还没建
+    return { checked: 0, due: 0, sent: 0, users: 0, gated: 0, failed: [] };   // 表还没建
   }
 
-  const report = { checked: rows.length, due: 0, sent: 0, users: 0, failed: [] };
+  const report = { checked: rows.length, due: 0, sent: 0, users: 0, gated: 0, failed: [] };
+  const nowSec = Math.floor(now.getTime() / 1000);
 
   for (const row of rows) {
     let config;
@@ -1344,6 +1377,15 @@ export async function runScheduledNotify(env, { now = new Date() } = {}) {
     }
     if (!config.enabled) continue;
 
+    // 检查频率门控：云端定时器每 5 分钟醒来一次，用户可以调大检查间隔（默认 5 分钟）。
+    // last_scan 只由这里的定时检查写入；30 秒容差吸收 Cron 的触发抖动。
+    const intervalSec = (Number(config.checkInterval) || 5) * 60;
+    const lastScan = Number(row.last_scan) || 0;
+    if (lastScan && nowSec - lastScan < intervalSec - 30) {
+      report.gated += 1;
+      continue;
+    }
+
     try {
       const one = await runNotifyForUser(env, row.user_id, config, { now });
       if (one.due > 0) report.users += 1;
@@ -1353,6 +1395,9 @@ export async function runScheduledNotify(env, { now = new Date() } = {}) {
     } catch (err) {
       report.failed.push({ user: row.user_id, error: err?.message || String(err) });
       console.error(`[notify] user=${row.user_id} 失败：${err?.message || err}`);
+    } finally {
+      // 检查发生过就要盖章（包括免打扰时段跳过的情况），否则门控永远放行
+      await stampLastScan(env, row.user_id, nowSec);
     }
   }
 
@@ -1367,6 +1412,8 @@ export async function previewDue(env, userId, config, { now = new Date(), reqTz 
   const items = await findDueTodos(env, userId, withOffset, { today });
   const leadDays = config.leadDays ?? 1;
   const out = { today, tz, leadDays, items };
+  // 还有多少未完成任务没设到期日（规则上线前的历史数据），前端据此显示「补齐到期日」按钮
+  out.missingDue = await countMissingDue(env, userId);
   if (!items.length) {
     out.hint = await describeNotifyGap(env, userId, config, { today, leadDays });
   }

@@ -1140,6 +1140,21 @@ body.side-open .sidebar {
 .todo-due.due-overdue { color: var(--danger); border-color: rgba(220, 74, 74, 0.4); }
 .todo-due-empty { color: var(--text-faint); opacity: 0; transition: opacity 0.15s ease; }
 .todo-item:hover .todo-due-empty, .todo-item:focus-within .todo-due-empty { opacity: 0.7; }
+/* 到期日 == 所属日期 是默认状态（新增时自动设的），弱化一点，跟「特意改过」区分开；
+   已过期仍然保持醒目，因为那是真的需要处理 */
+.todo-due.is-default:not(.due-overdue) { color: var(--text-faint); border-color: var(--border); }
+
+/* 预览里的「补齐到期日」一行 */
+.preview-fix {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.preview-fix-text { font-size: 12.5px; color: var(--text-muted); }
 
 /* 新增任务框里的「设到期日」入口 */
 .composer-due {
@@ -1156,6 +1171,8 @@ body.side-open .sidebar {
 }
 .composer-due:hover { color: var(--text); border-color: var(--text-faint); }
 .composer-due.set { border-style: solid; color: var(--accent); border-color: rgba(74, 134, 220, 0.45); }
+/* 还在「跟随任务所属日期」时用中性色，说明这是默认值而不是特意设的 */
+.composer-due.set.is-default { color: var(--text-muted); border-color: var(--border); }
 
 /* ---------------------------------- Toast ---------------------------------- */
 .toast-host {

@@ -10,7 +10,7 @@
   'use strict';
 
   const API_BASE = '/api';
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.2.1';
 
   const URL_PARAMS = new URLSearchParams(location.search);
   /** ?demo=1 直接进入演示模式并灌入示例数据，用于无后端时预览界面 */
@@ -106,6 +106,7 @@
     notifyOverdue: $('notify-overdue'),
     notifyLead: $('notify-lead'),
     notifyTime: $('notify-time'),
+    notifyInterval: $('notify-interval'),
     notifyBody: $('notify-body'),
     notifyChannels: $('notify-channels'),
     notifyParams: $('notify-params'),
@@ -373,7 +374,8 @@
   function demoNotifyDefaults() {
     return {
       enabled: false, channels: [], leadDays: 1, dailyRepeat: false,
-      includeOverdue: true, tz: clientTimeZone(), time: '09:00', params: {},
+      includeOverdue: true, tz: clientTimeZone(), time: '09:00',
+      checkInterval: 5, params: {},
     };
   }
 
@@ -392,11 +394,17 @@
       })
       .sort((a, b) => a.days - b.days);
     const out = { today, tz: cfg.tz || clientTimeZone(), leadDays: lead, items };
+    // 还有多少未完成任务从没设过到期日（null；空串是用户明确清空的，不算），
+    // 用于显示「补齐到期日」按钮
+    out.missingDue = (db.todos || []).filter((t) => !t.done && t.dueDate == null).length;
     if (!items.length) {
       // 与后端 describeNotifyGap 对齐：预览为空时告诉用户原因
       const withDue = (db.todos || []).filter((t) => !t.done && t.dueDate);
       if (!withDue.length) {
-        out.hint = '当前未完成的任务都没有设置到期日：在新增框的「到期日」按钮或任务卡上的日期徽标里设置后，才会触发提醒';
+        out.hint = out.missingDue > 0
+          ? `有 ${out.missingDue} 个未完成任务的到期日为空，所以没有可提醒的内容。`
+            + '新任务现在默认按「所属日期」自动设到期日，点下面的「补齐到期日」可以把这些历史任务一次性补上'
+          : '当前没有未完成的任务，没有可提醒的内容';
       } else {
         const next = withDue.map((t) => t.dueDate).sort()[0];
         if (daysBetween(today, next) > lead) {
@@ -492,7 +500,8 @@
         const minOrder = Math.min(0, ...db.todos.filter((t) => t.date === day).map((t) => t.order));
         const todo = {
           id: demoId(), title, done: false, date: day,
-          dueDate: body?.dueDate || null,
+          // 到期日默认等于所属日期；显式传 '' / null 表示这条任务不设到期日
+          dueDate: body?.dueDate === undefined ? day : (body.dueDate || ''),
           order: minOrder - 1, createdAt: Math.floor(Date.now() / 1000),
         };
         db.todos.push(todo);
@@ -524,7 +533,13 @@
             ? db.todos.filter((t) => t.date === body.from && !t.done)
             : db.todos.filter((t) => t.date < day && !t.done);
           let order = Math.min(0, ...db.todos.filter((t) => t.date === day).map((t) => t.order)) - 1;
-          pending.forEach((t) => { t.date = day; t.order = order--; moved += 1; });
+          pending.forEach((t) => {
+            // 到期日默认等于所属日期：还停在原日期的就跟着顺延，手动改过的保持不动
+            if (t.dueDate && t.dueDate === t.date) t.dueDate = day;
+            t.date = day;
+            t.order = order--;
+            moved += 1;
+          });
           demoWrite(db);
           return { ok: true, moved, todos: demoList(db.todos, day), ...demoCount(db.todos, day) };
         }
@@ -542,6 +557,17 @@
         return { ok: true, stats: Array.from(map.values()).sort((a, b) => (a.date < b.date ? 1 : -1)) };
       }
 
+      // 一次性把没设到期日的任务补成所属日期（演示模式等价实现）
+      if (seg[1] === 'backfill-due' && method === 'POST') {
+        let updated = 0;
+        db.todos.forEach((t) => {
+          // 只补「从没设过」的（null / undefined），用户显式清空（空串）的不动
+          if (t.dueDate == null) { t.dueDate = t.date; updated += 1; }
+        });
+        demoWrite(db);
+        return { ok: true, updated, message: updated ? `已把 ${updated} 条任务的到期日补成所属日期` : '没有需要补齐的任务' };
+      }
+
       const id = seg[1];
       const index = db.todos.findIndex((t) => t.id === id);
       if (index === -1) throw new ApiError('任务不存在', 404);
@@ -554,8 +580,13 @@
           t.title = title;
         }
         if ('done' in (body || {})) t.done = !!body.done;
-        if ('date' in (body || {})) t.date = body.date;
-        if ('dueDate' in (body || {})) t.dueDate = body.dueDate || null;
+        if ('date' in (body || {})) {
+          const prevDate = t.date;
+          // 到期日默认等于所属日期：没被手动改过就跟着一起走
+          if (!('dueDate' in (body || {})) && t.dueDate === prevDate) t.dueDate = body.date;
+          t.date = body.date;
+        }
+        if ('dueDate' in (body || {})) t.dueDate = body.dueDate || '';
         demoWrite(db);
         return { ok: true, todo: t, ...demoCount(db.todos, t.date) };
       }
@@ -581,8 +612,9 @@
         };
       }
       if (seg[1] === 'config' && method === 'PUT') {
-        // 跟后端一样：密钥留空 = 不修改
+        // 跟后端一样：密钥留空 = 不修改；检查频率限制在 5–1440 分钟
         const merged = { ...db.notify, ...body };
+        merged.checkInterval = Math.min(Math.max(Math.round(Number(body.checkInterval)) || 5, 5), 1440);
         merged.params = { ...(db.notify.params || {}) };
         Object.entries(body.params || {}).forEach(([ch, vals]) => {
           const prev = merged.params[ch] || {};
@@ -721,6 +753,7 @@
       title,
       done,
       date: day(delta),
+      dueDate: day(delta),   // 到期日默认等于所属日期
       order: i,
       createdAt: Math.floor(Date.now() / 1000) + i,
     }));
@@ -1051,28 +1084,47 @@
     openDatePop(el.composerDate, state.date, (d) => gotoDate(d));
   });
 
-  // 新增任务时的「到期日」：只在本次提交里生效，提交后自动清空
+  // 新增任务时的「到期日」：默认等于任务的「所属日期」——
+  // 10-16 的待办到期日就是 10-16，不用每次手动点按钮，当天该做的事当天就会提醒。
+  // composerDueDate = null 表示仍在跟随所属日期；用户手选后固定；
+  // 点弹层里的「清空」= composerDueOff，表示这条任务刻意不要到期日。
   let composerDueDate = null;
+  let composerDueOff = false;
+
+  /** 本次提交实际会用到的到期日（'' 表示明确不要到期日） */
+  function composerDueValue() {
+    if (composerDueOff) return '';
+    return composerDueDate || state.date;
+  }
 
   function renderComposerDue() {
-    const set = !!composerDueDate;
-    el.composerDue.classList.toggle('set', set);
-    el.composerDueText.textContent = set
-      ? humanizeDue(daysBetween(todayStr(), composerDueDate)).replace('到期', '')
-      : '到期日';
-    el.composerDue.title = set
-      ? `到期日 ${composerDueDate}（点击修改，清空=取消）`
-      : '到期日：设了之后会按提醒配置推送';
+    const value = composerDueValue();
+    el.composerDue.classList.toggle('set', !!value);
+    if (!value) {
+      el.composerDueText.textContent = '不设到期日';
+      el.composerDue.classList.remove('is-default');
+      el.composerDue.title = '这条任务不会触发到期提醒（点一下可以重新设）';
+      return;
+    }
+    // 还跟着所属日期走时标一个 is-default，视觉上弱化，跟「特意改过」区分开。
+    // 文案保留「到期」字样（如「今天到期」），和左边的「今天」（归属日期）区分开。
+    const follows = !composerDueDate && !composerDueOff;
+    el.composerDue.classList.toggle('is-default', follows);
+    el.composerDueText.textContent = humanizeDue(daysBetween(todayStr(), value));
+    el.composerDue.title = follows
+      ? `到期日 ${value}（默认与任务所属日期相同，点击可改，清空 = 不设到期日）`
+      : `到期日 ${value}（点击修改，清空 = 不设到期日）`;
   }
 
   el.composerDue.addEventListener('click', () => {
     if (pop.open) { closeDatePop(); return; }
-    openDatePop(el.composerDue, composerDueDate || state.date, (d) => {
+    openDatePop(el.composerDue, composerDueValue() || state.date, (d) => {
       composerDueDate = d;
+      composerDueOff = false;
       renderComposerDue();
     }, {
-      // 弹层里的「清空」= 取消到期日
-      onClear: () => { composerDueDate = null; renderComposerDue(); },
+      // 弹层里的「清空」= 这条任务不设到期日
+      onClear: () => { composerDueDate = null; composerDueOff = true; renderComposerDue(); },
     });
   });
   renderComposerDue();
@@ -1082,6 +1134,7 @@
     state.month = null;
     state.date = date;
     renderDate();
+    renderComposerDue();   // 到期日默认跟着所属日期走，切日期时要同步刷新
     closeSidebar();
     await refresh();
   }
@@ -1318,21 +1371,29 @@
 
     acts.append(edit, del);
 
-    // 到期徽标：有到期日就显示「N 天后到期」，没有则显示一个悬停才可见的「+ 到期」
+    // 到期徽标：新增任务默认到期日 = 所属日期，所以这里基本都会显示「N 天后到期」。
+    // 到期日与所属日期相同时视觉弱化（默认态），已过期仍然醒目；
+    // 没设到期日的（用户手动清空过）显示一个悬停才可见的「+ 到期」。
     const due = document.createElement('button');
     due.type = 'button';
     if (todo.dueDate) {
       const days = daysBetween(todayStr(), todo.dueDate);
-      due.className = `todo-due ${dueTone(days)}`;
+      const isDefault = todo.dueDate === todo.date && days >= 0;
+      due.className = `todo-due ${dueTone(days)}${isDefault ? ' is-default' : ''}`;
       due.textContent = humanizeDue(days);
-      due.title = `到期日 ${todo.dueDate}（点击修改）`;
+      due.title = isDefault
+        ? `到期日 ${todo.dueDate}（默认与所属日期相同，点击可改，清空 = 不提醒）`
+        : `到期日 ${todo.dueDate}（点击修改，清空 = 不提醒）`;
     } else {
       due.className = 'todo-due todo-due-empty';
       due.textContent = '+ 到期';
-      due.title = '给这条任务设一个到期日';
+      due.title = '给这条任务设一个到期日，才会触发到期提醒';
     }
     due.addEventListener('click', () => openDatePop(due, todo.dueDate || todo.date, (picked) => {
       patchTodo(todo, { dueDate: picked });
+    }, {
+      // 清空 = 这条任务不参与到期提醒（空字符串，跟「从没设过」区分开）
+      onClear: () => patchTodo(todo, { dueDate: '' }),
     }));
     if (!todo.done) acts.prepend(due);
 
@@ -1744,16 +1805,19 @@
     const btn = el.addBtn || el.addForm.querySelector('button[type=submit]');
     if (btn) btn.disabled = true;
 
-    // 本次提交的到期日（可选），提交后清空
-    const dueDate = composerDueDate;
+    // 本次提交的到期日：默认就是任务所属日期（可用面板上的按钮改/清空）
+    const dueDate = composerDueValue();
 
     // 月视图：不做日视图的乐观插入，成功后刷新整月数据
     if (state.month) {
       el.addInput.value = '';
       try {
         await api('/todos', { method: 'POST', body: { title, date: state.date, dueDate } });
+        composerDueDate = null; composerDueOff = false;   // 回到「跟随所属日期」的默认态
+        renderComposerDue();
         await refreshMonth();
         scheduleSidebarRefresh();
+        loadNotifyPreviewSoon();
       } catch (err) {
         if (err.status === 401) { handleSessionLost(); return; }
         toast(err.message, 'err');
@@ -1782,7 +1846,8 @@
       state.todos.sort((a, b) => Number(a.done) - Number(b.done) || a.order - b.order);
       state.remaining = data.remaining;
       state.total = data.total;
-      composerDueDate = null;      // 到期日只在这一次提交里生效
+      composerDueDate = null;      // 回到「跟随所属日期」的默认态
+      composerDueOff = false;
       renderComposerDue();
       renderList();
       syncDayCache();
@@ -2256,8 +2321,11 @@
       await ensureFallbackCatalog();          // 演示模式下接口不带 catalog，这里补上
       fillNotifyForm(data.config || {}, data.preview || null);
       const cron = data.cron || {};
+      // 提示里的「检查频率」用用户自己设置的值（表单刚被 fillNotifyForm 填好），
+      // 云端定时器固定每 5 分钟醒来，这里显示的是实际检查节奏
+      const every = Math.max(5, Number(el.notifyInterval.value) || 5);
       el.notifyCronHint.textContent = cron.healthy
-        ? `定时任务运行正常（每 ${Math.round((cron.intervalSeconds || 300) / 60)} 分钟检查一次）。`
+        ? `定时任务运行正常：按当前设置每 ${every} 分钟检查一次（云端定时器最快每 5 分钟醒来）。`
         : '尚未检测到定时任务心跳：提醒依赖 Cloudflare Cron Trigger，请确认 wrangler.jsonc 里的 crons 已生效。';
     } catch (err) {
       setStatus(el.notifyStatus, `读取提醒配置失败：${err.message}`, 'err');
@@ -2364,6 +2432,7 @@
     el.notifyOverdue.checked = config.includeOverdue !== false;
     el.notifyLead.value = config.leadDays ?? 1;
     el.notifyTime.value = config.time || '09:00';
+    el.notifyInterval.value = config.checkInterval ?? 5;
     renderChannelTags(config.channels || [], config.catalog || []);
     renderChannelParams(config);
     syncNotifyBody();
@@ -2386,23 +2455,55 @@
           ? `按当前配置（提前 ${preview.leadDays} 天），暂时没有会被提醒的任务。`
           : '暂无预览数据。');
       box.appendChild(p);
-      return;
+    } else {
+      items.forEach((t) => {
+        const row = document.createElement('div');
+        row.className = 'preview-item';
+        const title = document.createElement('span');
+        title.className = 'pv-title';
+        title.textContent = t.title;
+        const due = document.createElement('span');
+        due.className = 'pv-due';
+        due.textContent = t.dueDate || '';
+        const chip = document.createElement('span');
+        chip.className = `pv-days ${dueTone(t.days)}`;
+        chip.textContent = humanizeDue(t.days);
+        row.append(title, due, chip);
+        box.appendChild(row);
+      });
     }
-    items.forEach((t) => {
+
+    // 还有历史任务没设到期日（新任务已默认按所属日期设置）时，给一个一键补齐的入口
+    if (preview && Number(preview.missingDue) > 0) {
       const row = document.createElement('div');
-      row.className = 'preview-item';
-      const title = document.createElement('span');
-      title.className = 'pv-title';
-      title.textContent = t.title;
-      const due = document.createElement('span');
-      due.className = 'pv-due';
-      due.textContent = t.dueDate || '';
-      const chip = document.createElement('span');
-      chip.className = `pv-days ${dueTone(t.days)}`;
-      chip.textContent = humanizeDue(t.days);
-      row.append(title, due, chip);
+      row.className = 'preview-fix';
+      const text = document.createElement('span');
+      text.className = 'preview-fix-text';
+      text.textContent = `另有 ${preview.missingDue} 条未完成任务的到期日为空`;
+      const fix = document.createElement('button');
+      fix.type = 'button';
+      fix.className = 'btn subtle small';
+      fix.textContent = '补齐到期日';
+      fix.title = '把这些任务的到期日设成它们的所属日期，让它们也进入提醒范围';
+      fix.addEventListener('click', backfillDueDates);
+      row.append(text, fix);
       box.appendChild(row);
-    });
+    }
+  }
+
+  /** 把「没设到期日」的历史任务一次性补成所属日期 */
+  async function backfillDueDates() {
+    setStatus(el.notifyStatus, '正在补齐到期日…', 'busy');
+    try {
+      const data = await api('/todos/backfill-due', { method: 'POST' });
+      setStatus(el.notifyStatus, data.message || '补齐完成', 'ok');
+      await refresh();
+      if (state.month) await refreshMonth();
+      scheduleSidebarRefresh();
+      loadNotifyPreviewSoon();
+    } catch (err) {
+      setStatus(el.notifyStatus, `补齐失败：${err.message}`, 'err');
+    }
   }
 
   function collectNotifyForm() {
@@ -2423,6 +2524,7 @@
       dailyRepeat: el.notifyDaily.checked,
       includeOverdue: el.notifyOverdue.checked,
       time: el.notifyTime.value || '09:00',
+      checkInterval: Math.min(Math.max(Math.round(Number(el.notifyInterval.value)) || 5, 5), 1440),
       tz: clientTimeZone(),
       params,
     };

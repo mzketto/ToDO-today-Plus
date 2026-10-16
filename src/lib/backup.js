@@ -257,9 +257,14 @@ export async function applyPayload(env, user, payload, { mode = 'merge' } = {}) 
     const title = String(item?.title ?? '').replace(/\s+/g, ' ').trim();
     const date = String(item?.date ?? '').trim();
     if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-    // 到期日可选：格式不对就当没有，不影响导入
-    const dueRaw = String(item?.dueDate ?? '').trim();
-    const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(dueRaw) ? dueRaw : null;
+    // 到期日：字段整个缺失（老版本导出的备份）时取任务所属日期，与新增任务的默认规则一致；
+    // 显式写成 null / 空串 / 非法值都当作「这条不设到期日」，并存成空串而不是 NULL，
+    // 这样后续「补齐到期日」不会把它又补回来。
+    const dueField = item?.dueDate;
+    const dueText = dueField === undefined ? '' : String(dueField ?? '').trim();
+    const dueDate = dueField === undefined
+      ? date
+      : (/^\d{4}-\d{2}-\d{2}$/.test(dueText) ? dueText : '');
     cleaned.push({
       title: title.slice(0, 500),
       done: item.done ? 1 : 0,
