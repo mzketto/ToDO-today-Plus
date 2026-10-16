@@ -638,10 +638,27 @@ test('Server 酱：按 key 前缀自动选择 sctapi 或 push.ft07 端点，用�
     assert.equal(m.last().form.title, SAMPLE.title);
     assert.match(m.last().form.desp, /交房租/);
 
+    // 三代 key（sctp{uid}t…）官方格式：https://{uid}.push.ft07.com/send/{SendKey}.send
+    // （uid 是 sctp 与 t 之间的数字；不能把整个 key 当子域名，也不能丢 .send 后缀）
     await sendOne('serverchan', { sendKey: 'sctp123txxx', channel: '9' }, SAMPLE, {});
-    assert.equal(m.last().url, 'https://sctp123txxx.push.ft07.com/send');
+    assert.equal(m.last().url, 'https://123.push.ft07.com/send/sctp123txxx.send');
     assert.equal(m.last().form.channel, '9');
+    assert.equal(m.last().form.title, SAMPLE.title);
   } finally { m.restore(); }
+});
+
+test('Server 酱：自检回显说明真实请求 URL，且不泄漏完整 SendKey', async () => {
+  const sctp = describeRequest('serverchan', { sendKey: 'sctp123tabcdefg' }, {});
+  assert.equal(sctp.url, 'https://123.push.ft07.com/send/sctp123tabcdefg.send');
+  assert.match(sctp.note, /push\.ft07\.com/);
+  assert.ok(!sctp.sendKeyTail.includes('sctp123tabcdefg'), '回显不能出现完整 key');
+  assert.match(sctp.sendKeyTail, /…defg$/);
+
+  const turbo = describeRequest('serverchan', { sendKey: 'SCT123abc' }, {});
+  assert.equal(turbo.url, 'https://sctapi.ftqq.com/SCT123abc.send');
+
+  const empty = describeRequest('serverchan', {}, {});
+  assert.equal(empty.url, '(未配置 SendKey)');
 });
 
 test('Server 酱：code != 0 视为失败并带上原因', async () => {

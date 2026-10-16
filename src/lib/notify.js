@@ -619,6 +619,21 @@ async function postJson(url, payload, headers = {}) {
   return readResult(res);
 }
 
+/**
+ * Server 酱推送 URL。
+ * 官方文档（doc.sc3.ft07.com）：
+ *  - 三代 key（sctp…，形如 sctp{uid}txxxxxxxx）：
+ *      https://{uid}.push.ft07.com/send/{SendKey}.send   （uid = sctp 与 t 之间的数字）
+ *  - Turbo key（SCT… 或其它）：https://sctapi.ftqq.com/{SendKey}.send
+ * 注意：不能把整个 sendKey 当子域名（会 404），路径里的 .send 后缀也不能少。
+ */
+function serverchanUrl(sendKey) {
+  const key = String(sendKey || '').trim();
+  const m = /^sctp(\d+)t/i.exec(key);
+  if (m) return `https://${m[1]}.push.ft07.com/send/${key}.send`;
+  return `https://sctapi.ftqq.com/${key}.send`;
+}
+
 async function postForm(url, pairs, headers = {}) {
   const body = new URLSearchParams(pairs).toString();
   const res = await fetchWithTimeout(url, {
@@ -902,9 +917,7 @@ export async function sendOne(channel, params, message, env = {}) {
     /* ---------------- Server 酱 ---------------- */
     case 'serverchan': {
       const sendKey = required(p.sendKey, 'Server 酱 SendKey', env.NOTIFY_SERVERCHAN_KEY);
-      const url = /^sctp/i.test(sendKey)
-        ? `https://${sendKey}.push.ft07.com/send`
-        : `https://sctapi.ftqq.com/${sendKey}.send`;
+      const url = serverchanUrl(sendKey);
       const pairs = [['title', title], ['desp', text]];
       if (p.channel) pairs.push(['channel', String(p.channel)]);
       const result = await postForm(url, pairs);
@@ -1083,6 +1096,19 @@ export async function testChannel(env, channel, config) {
  * 用户在「发送测试」里看到它，就能判断 Worker 跑的是不是最新代码。
  */
 export function describeRequest(channel, params = {}, env = {}) {
+  if (channel === 'serverchan') {
+    const p = params || {};
+    const key = notify_pickString(p.sendKey) || notify_pickString(env.NOTIFY_SERVERCHAN_KEY);
+    const gen = /^sctp/i.test(key) ? 'Server酱³（sctp）' : 'Server酱·Turbo（SCT）';
+    return {
+      method: 'POST',
+      url: key ? serverchanUrl(key) : '(未配置 SendKey)',
+      contentType: 'application/x-www-form-urlencoded; charset=utf-8',
+      bodyKeys: ['title', 'desp'],
+      sendKeyTail: key ? `${/^sctp(\d+)t/i.exec(key) ? 'sctp' + (/^sctp(\d+)t/i.exec(key)[1]) + 't…' : key.slice(0, 3) + '…'}${key.slice(-4)}` : '(未配置)',
+      note: `${gen} 官方接口格式；sctp 开头走 push.ft07.com，其余走 sctapi.ftqq.com`,
+    };
+  }
   if (channel !== 'bark') return null;
   const p = params || {};
   // 与 sendOne 的 bark 分支同款归一化：服务器地址里可能混着 device key
