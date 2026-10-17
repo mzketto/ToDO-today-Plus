@@ -662,6 +662,18 @@ test('Server 酱：自检回显说明真实请求 URL，且不泄漏完整 SendK
   assert.equal(empty.url, '(未配置 SendKey)');
 });
 
+test('邮件：自检回显走 Resend API，不泄漏完整 Key', async () => {
+  const d = describeRequest('email', { apiKey: 're_1234567890abcdef' }, {});
+  assert.equal(d.url, 'https://api.resend.com/emails');
+  assert.deepEqual(d.bodyKeys, ['from', 'to', 'subject', 'text']);
+  assert.match(d.apiKeyTail, /…cdef$/);
+  assert.ok(!JSON.stringify(d).includes('re_1234567890abcdef'), '回显不能出现完整 Key');
+  assert.match(d.note, /Resend/);
+
+  const empty = describeRequest('email', {}, {});
+  assert.equal(empty.apiKeyTail, '(未配置)');
+});
+
 test('Webhook：自检回显默认请求体与自定义模板，密钥值不回显', async () => {
   const def = describeRequest('webhook', { url: 'https://hook.example.com/a', headers: '{"Authorization":"Bearer abc"}' }, {});
   assert.equal(def.method, 'POST');
@@ -775,6 +787,18 @@ test('ntfy：POST /<topic>，标题走 header，中文标题自动编码', async
     await sendOne('ntfy', { server: 'https://ntfy.example.com', topic: 't', token: 'tk_1' }, SAMPLE, {});
     assert.equal(m.last().headers.authorization, 'Bearer tk_1');
   } finally { m.restore(); }
+});
+
+test('ntfy：中文主题直接报「不合法」并给出示例，而不是发出去吃上游 404', async () => {
+  // ntfy 主题只允许 字母/数字/-/_，中文会被服务器当不存在路径返回 404 page not found
+  await assert.rejects(
+    () => sendOne('ntfy', { topic: '今日待办PLUS' }, SAMPLE, {}),
+    (err) => {
+      assert.match(err.message, /不合法/);
+      assert.match(err.message, /todo-today/);
+      return true;
+    },
+  );
 });
 
 test('所有渠道：必填项缺失时给出「中文 + 字段名」的报错，而不是 undefined', async () => {

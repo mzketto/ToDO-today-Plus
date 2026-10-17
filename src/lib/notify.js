@@ -172,7 +172,7 @@ export const CHANNEL_FIELDS = {
   ntfy: {
     fields: [
       { key: 'server', label: '服务器地址', placeholder: 'https://ntfy.sh（自建可改）', optional: true },
-      { key: 'topic', label: '主题', placeholder: '订阅的主题名' },
+      { key: 'topic', label: '主题', placeholder: '仅字母/数字/-/_，不支持中文，如 todo-today' },
       { key: 'token', label: '访问令牌', placeholder: '自建服务开启了鉴权才需要', secret: true, optional: true },
       { key: 'priority', label: '优先级', placeholder: '1-5，默认 3', optional: true },
     ],
@@ -966,6 +966,11 @@ export async function sendOne(channel, params, message, env = {}) {
     case 'ntfy': {
       const server = normalizeUrl(p.server || 'https://ntfy.sh');
       const topic = required(p.topic, 'ntfy 主题');
+      // ntfy 官方规定主题只能是 字母/数字/-/_（1-64 位），中文等其它字符会被
+      // 服务器当成不存在的路径返回 404 "page not found"（实测踩过的坑）
+      if (!/^[-_A-Za-z0-9]{1,64}$/.test(topic)) {
+        throw new HttpError(`ntfy 主题「${topic}」不合法：只能用英文字母、数字、- 和 _（最长 64 位），不能用中文或空格。比如改成 todo-today`);
+      }
       const headers = {
         'content-type': 'text/plain; charset=utf-8',
         title: encodeHeaderValue(title),
@@ -1157,6 +1162,18 @@ export async function testChannel(env, channel, config) {
  * 用户在「发送测试」里看到它，就能判断 Worker 跑的是不是最新代码。
  */
 export function describeRequest(channel, params = {}, env = {}) {
+  if (channel === 'email') {
+    const p = params || {};
+    const key = notify_pickString(p.apiKey) || notify_pickString(env.NOTIFY_EMAIL_API_KEY);
+    return {
+      method: 'POST',
+      url: 'https://api.resend.com/emails',
+      contentType: 'application/json; charset=utf-8',
+      bodyKeys: ['from', 'to', 'subject', 'text'],
+      apiKeyTail: key ? `…${key.slice(-4)}` : '(未配置)',
+      note: '走 Resend 的 HTTPS API（Workers 无法直连 SMTP，因此没有服务器地址/端口）；发件人域名需在 Resend 验证，未验证时只能用 onboarding@resend.dev 发给注册邮箱',
+    };
+  }
   if (channel === 'webhook') {
     const p = params || {};
     const headers = parseJsonInput(p.headers);
