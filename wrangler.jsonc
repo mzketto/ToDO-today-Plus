@@ -2,7 +2,9 @@
   // Cloudflare Workers 部署配置
   // 文档：https://developers.cloudflare.com/workers/wrangler/configuration/
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "todo-today",
+  // Worker 名称必须与 Cloudflare 上 Workers Builds 项目名一致，
+  // 否则每次构建都会警告「Failed to match Worker name」并可能部署到错误的 Worker。
+  "name": "todo-today-plus",
   "main": "src/index.js",
   "compatibility_date": "2025-05-01",
 

@@ -214,7 +214,11 @@ npx wrangler secret put NOTIFY_RESEND_API_KEY      # 邮件（Resend）API Key
 npx wrangler deploy
 ```
 
-完成后会输出形如 `https://todo-today.<你的子域>.workers.dev` 的地址，打开注册一个账号即可开始用。
+完成后会输出形如 `https://todo-today-plus.<你的子域>.workers.dev` 的地址，打开注册一个账号即可开始用。
+
+> `wrangler.jsonc` 里的 `name` 必须和 Cloudflare 上的 Worker / Workers Builds 项目名完全一致，
+> 否则构建日志会出现 `Failed to match Worker name` 警告，Cloudflare 还会自动提 PR 去改配置。
+> 想换名字就两处一起改。
 
 > 上面是**命令行部署**。如果你用 **Git 自动构建（Workers Builds）**，
 > 请对照 [附录 · Git 自动构建的同步清单](#附录--git-自动构建的同步清单) 逐项检查，
