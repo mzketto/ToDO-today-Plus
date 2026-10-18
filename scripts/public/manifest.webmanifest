@@ -1,0 +1,19 @@
+{
+  "name": "今日待办",
+  "short_name": "待办",
+  "description": "极简的每日待办清单，云端同步，支持 R2 / S3 / WebDAV 云备份。",
+  "id": "todo-today",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "portrait",
+  "background_color": "#f5f6fb",
+  "theme_color": "#5b5bd6",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

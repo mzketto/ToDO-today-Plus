@@ -1,0 +1,73 @@
+{
+  // Cloudflare Workers 部署配置
+  // 文档：https://developers.cloudflare.com/workers/wrangler/configuration/
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Worker 名称必须与 Cloudflare 上 Workers Builds 项目名一致，
+  // 否则每次构建都会警告「Failed to match Worker name」并可能部署到错误的 Worker。
+  "name": "todo-today-plus",
+  "main": "src/index.js",
+  "compatibility_date": "2025-05-01",
+
+  // 静态资源（public/ 下的 HTML / CSS / JS）。
+  // 默认 run_worker_first=false：命中静态文件直接返回，未命中的请求才进 Worker。
+  // 这里额外显式声明 /api/* 必须先走 Worker，避免将来 public/api 目录把它遮蔽掉。
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "observability": {
+    "enabled": true
+  },
+
+  // ===== 定时任务：备份 + 到期提醒 =====
+  // 每 5 分钟唤醒一次 Worker，同一轮里并行做两件事：
+  //   1) 定时备份：只有「配置了定时备份且已到周期」的用户才会真正上传
+  //   2) 到期提醒：把到期日进入窗口的任务推到用户配置的各个渠道
+  // 只有这一个 Cron，不需要为提醒再建一个。
+  // 本地调试定时任务：npx wrangler dev --test-scheduled
+  //                然后访问 http://localhost:8787/__scheduled?cron=*/5+*+*+*+*
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
+  // ===== 主数据库：Cloudflare D1 =====
+  // 先执行：npx wrangler d1 create todo-today
+  // 然后把返回的 database_id 粘贴到下面
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "todo-today",
+      "database_id": "placeholder-replace-me"
+    }
+  ],
+
+  // ===== 可选备份桶：Cloudflare R2 =====
+  // 想用「R2 原生备份」（不需要 S3 密钥）时，去掉下面的注释并先执行：
+  //   npx wrangler r2 bucket create todo-backups
+  // "r2_buckets": [
+  //   {
+  //     "binding": "BACKUPS",
+  //     "bucket_name": "todo-backups"
+  //   }
+  // ],
+
+  // ===== Worker 变量（非敏感配置）=====
+  // 敏感信息请用密钥，不要写在这里：
+  //   npx wrangler secret put BACKUP_S3_SECRET_KEY
+  //   npx wrangler secret put BACKUP_WEBDAV_PASSWORD
+  //   npx wrangler secret put NOTIFY_BARK_KEY
+  //   npx wrangler secret put NOTIFY_GOTIFY_TOKEN
+  //   npx wrangler secret put NOTIFY_WXPUSHER_APPTOKEN
+  //   npx wrangler secret put NOTIFY_TELEGRAM_BOT_TOKEN
+  //   npx wrangler secret put NOTIFY_SERVERCHAN_KEY
+  //   npx wrangler secret put NOTIFY_PUSHPLUS_TOKEN
+  //   npx wrangler secret put NOTIFY_RESEND_API_KEY
+  // 提醒渠道密钥也可以直接填在网页的「到期提醒」面板里（会存进 D1），
+  // 两处都填时以页面为准，环境变量只作兜底。
+  "vars": {
+    "APP_NAME": "今日待办",
+    "ALLOW_REGISTRATION": "true"
+  }
+}
