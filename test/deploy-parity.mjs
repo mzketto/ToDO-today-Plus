@@ -44,12 +44,18 @@ function decodeBundleAssets() {
   return Object.fromEntries(
     Object.entries(obj).map(([p, entry]) => [
       p,
-      Buffer.from(entry.body, 'base64').toString('utf8'),
+      // 二进制资源（PNG 等）不能过 UTF-8 解码（会丢字节），保留原始 base64
+      entry.binary ? entry.body : Buffer.from(entry.body, 'base64').toString('utf8'),
     ]),
   );
 }
 
 const bundleAssets = decodeBundleAssets();
+
+/** 二进制资源按 base64 比对（PNG 不能过 UTF-8 解码），文本按 utf8 */
+function onDiskAssetB64(p) {
+  return readFileSync(join(ROOT, 'public', p)).toString('base64');
+}
 
 test('两条部署路径的静态资源内容一致（GitHub 版 === 网页粘贴版）', () => {
   for (const name of ['/app.js', '/index.html', '/style.css']) {
@@ -108,14 +114,25 @@ test('单文件产物与 public/ 完全同步（不会出现「修了这个没�
   const files = Object.keys(bundleAssets);
   assert.deepEqual(
     files.sort(),
-    ['/app.js', '/icon.svg', '/index.html', '/manifest.webmanifest', '/notify-channels.json', '/style.css'].sort(),
+    [
+      '/app.js', '/icon.svg', '/index.html', '/manifest.webmanifest', '/notify-channels.json',
+      '/style.css', '/sw.js',
+      '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-512-maskable.png',
+      '/icons/apple-touch-180.png', '/icons/favicon-32.png',
+    ].sort(),
     '内联资源清单应与 public/ 目录一致',
   );
-  // 每个内联文件都必须与磁盘上的 public/ 逐字节相同
+  // 每个内联文件都必须与磁盘上的 public/ 逐字节相同（统一按 base64 比对）
+  const binaryExt = new Set(['.png', '.jpg', '.jpeg', '.webp', '.ico', '.woff2']);
   for (const p of files) {
-    const onDisk = readFileSync(join(ROOT, 'public', p), 'utf8');
-    assert.equal(bundleAssets[p], onDisk, `${p} 与磁盘不一致，需要重新执行打包脚本`);
+    const bundledB64 = binaryExt.has(extname(p).toLowerCase())
+      ? bundleAssets[p]   // 二进制：bundleAssets 里存的就是原始 base64
+      : Buffer.from(bundleAssets[p], 'utf8').toString('base64');
+    assert.equal(bundledB64, onDiskAssetB64(p), `${p} 与磁盘不一致，需要重新执行打包脚本`);
   }
+  // sw.js 里不应残留版本占位符（版本号直接写在源文件里，两条路径共用）
+  assert.ok(!bundleAssets['/sw.js'] || !Buffer.from(bundleAssets['/sw.js'], 'base64').toString('utf8').includes('[[SW_CACHE_VERSION]]'),
+    'sw.js 残留版本占位符');
 });
 
 test('两套部署的 Cron 表达式一致（方案 A 靠 wrangler.jsonc，方案 B 靠控制台手填）', () => {
@@ -145,7 +162,11 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
 };
+
+/** index.html 与 sw.js 必须 no-cache：SW 更新检查与前端版本迭代都依赖每次拿最新 */
+const noCachePaths = new Set(['/index.html', '/sw.js']);
 
 /**
  * 模拟 Workers Builds 的 assets 绑定：直接从磁盘的 public/ 目录取文件。
@@ -166,7 +187,7 @@ function makeAssetsBinding() {
         status: 200,
         headers: {
           'content-type': MIME[extname(full).toLowerCase()] || 'application/octet-stream',
-          'cache-control': rel === '/index.html' ? 'no-cache' : 'public, max-age=3600',
+          'cache-control': noCachePaths.has(rel) ? 'no-cache' : 'public, max-age=3600',
         },
       });
     },
@@ -367,18 +388,25 @@ test('两条路径的静态资源都可用，且内容一致', async () => {
   const a = makeHarness(worker0, { assets: makeAssetsBinding() });
   const b = makeHarness(worker1);
 
-  for (const p of ['/index.html', '/app.js', '/style.css', '/notify-channels.json', '/manifest.webmanifest', '/icon.svg']) {
+  for (const p of ['/index.html', '/app.js', '/style.css', '/notify-channels.json', '/manifest.webmanifest', '/icon.svg', '/sw.js', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-512-maskable.png', '/icons/apple-touch-180.png', '/icons/favicon-32.png']) {
     const ra = await a.call('GET', p);
     const rb = await b.call('GET', p);
     assert.equal(ra.status, 200, `路径 A 取不到 ${p}`);
     assert.equal(rb.status, 200, `路径 B 取不到 ${p}`);
-    const [ta, tb] = [await ra.text(), await rb.text()];
-    assert.equal(tb, ta, `${p} 两条路径内容不一致`);
+    // PNG 是二进制：按字节比对，文本按字符串比对
+    const isPng = p.endsWith('.png');
+    const [ta, tb] = isPng ? [await ra.arrayBuffer(), await rb.arrayBuffer()] : [await ra.text(), await rb.text()];
+    assert.deepEqual(tb, ta, `${p} 两条路径内容不一致`);
     assert.equal(
       rb.headers.get('content-type'),
       ra.headers.get('content-type'),
       `${p} 两路径的 content-type 不一致`,
     );
+    // sw.js 必须 no-cache，否则浏览器永远发现不了 SW 更新，卡死在旧版本
+    if (p === '/sw.js' || p === '/index.html') {
+      assert.equal(ra.headers.get('cache-control'), 'no-cache', `${p} 路径 A 必须 no-cache`);
+      assert.equal(rb.headers.get('cache-control'), 'no-cache', `${p} 路径 B 必须 no-cache`);
+    }
   }
 
   // 首页（/）两条路径都应回落到 index.html

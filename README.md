@@ -248,7 +248,25 @@ npm test
 - **两条部署路径对照**（`test/deploy-parity.mjs`，9 项）：把「Git 自动构建」和「网页粘贴单文件」当两个真实 Worker，各跑一遍完整业务流程并逐条 diff 响应，确保功能不分叉；同时校验静态资源逐字节一致、Cron 表达式一致、演示模式渠道清单不漂移
 - UI 冒烟用真实 headless Chrome 走一遍主要交互（`scripts/smoke-ui.mjs`，31 项）
 
-当前 166 个后端用例 + 32 项 UI 检查全部通过。
+当前 175 个后端用例 + 32 项 UI 检查全部通过。
+
+---
+
+## PWA（安装到主屏幕）
+
+支持以 PWA 方式安装：Chrome/Edge 地址栏会出现「安装」按钮，iOS 用 Safari 的
+「添加到主屏幕」。安装后以独立窗口运行、有真图标、外壳离线可用。
+
+- **Service Worker（`public/sw.js`）**：只缓存外壳资源（HTML/CSS/JS/图标），
+  **`/api` 一律直连绝不缓存**——待办数据永远来自服务器，离线时显示原有错误提示，
+  不会返回过期数据
+- **版本管理**：`app.js` 的 `APP_VERSION`、`sw.js` 的 `CACHE_VERSION`、
+  `index.html` 的 `?v=` 参数三处必须一致（有测试守着）；发新版时一起改即可，
+  用户会收到「有新版本可用，点此更新」的提示
+- **图标**：`public/icons/` 下的 PNG 由 `python scripts/gen-icons.py` 从 icon.svg
+  设计生成（iOS 不支持 SVG 图标，PNG 必需）；改了图标请重新跑该脚本
+- **缓存策略**：`/index.html` 与 `/sw.js` 永远 `no-cache`（两种部署路径一致，
+  deploy-parity 有断言）；其余外壳资源 `max-age=3600` 并由 SW stale-while-revalidate
 
 ---
 

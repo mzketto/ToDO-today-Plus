@@ -10,9 +10,12 @@
 <meta name="apple-mobile-web-app-title" content="今日待办" />
 <title>今日待办</title>
 <link rel="manifest" href="./manifest.webmanifest" />
+<link rel="icon" href="./icons/favicon-32.png" type="image/png" sizes="32x32" />
 <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-<link rel="apple-touch-icon" href="./icon.svg" />
-<link rel="stylesheet" href="./style.css" />
+<link rel="apple-touch-icon" href="./icons/apple-touch-180.png" />
+<!-- 版本参数随前端 APP_VERSION 一起更新，防止发布新版后浏览器还用旧的 app.js/style.css -->
+<link rel="stylesheet" href="./style.css?v=1.2.4" />
+<script src="./app.js?v=1.2.4" defer></script>
 </head>
 <body>
 
@@ -465,6 +468,5 @@
 
 <div id="toast-host" class="toast-host" aria-live="polite"></div>
 
-<script src="./app.js"></script>
 </body>
 </html>

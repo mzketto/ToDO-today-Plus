@@ -127,13 +127,16 @@ async function serveStatic(request, env) {
     const path = pathname === '/' ? '/index.html' : pathname;
     const asset = INLINE_ASSETS[path];
     if (asset) {
-      return new Response(request.method === 'HEAD' ? null : asset.body, {
+      // index.html 与 sw.js 必须 no-cache：SW 更新检查与版本迭代都依赖每次拿到最新
+      const cacheControl = path === '/index.html' || path === '/sw.js'
+        ? 'no-cache'
+        : 'public, max-age=3600';
+      const body = asset.bytes ?? asset.body;
+      return new Response(request.method === 'HEAD' ? null : body, {
         status: 200,
         headers: {
           'content-type': asset.type,
-          'cache-control': path === '/index.html'
-            ? 'no-cache'
-            : 'public, max-age=3600',
+          'cache-control': cacheControl,
         },
       });
     }

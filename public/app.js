@@ -10,7 +10,7 @@
   'use strict';
 
   const API_BASE = '/api';
-  const APP_VERSION = '1.2.3';
+  const APP_VERSION = '1.2.4';
 
   const URL_PARAMS = new URLSearchParams(location.search);
   /** ?demo=1 直接进入演示模式并灌入示例数据，用于无后端时预览界面 */
@@ -316,6 +316,57 @@
       node.classList.add('leaving');
       setTimeout(() => node.remove(), 240);
     }, long ? Math.max(duration, 7000) : duration);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * PWA：Service Worker 注册与更新提示
+   *
+   * SW 只负责「离线能打开外壳 + 可安装」，/api 永远直连不缓存。
+   * 发现新版本时不自动接管（避免半个新版半个旧版），而是弹一条
+   * 可点击的 toast，用户确认后让新 SW 接管并刷新页面。
+   * ------------------------------------------------------------------ */
+  function setupServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    // 演示模式/非 HTTPS（如本地 file://）下注册没意义，浏览器自己也会拒绝
+    if (!['http:', 'https:'].includes(location.protocol)) return;
+
+    navigator.serviceWorker.register('./sw.js').then((reg) => {
+      // 新 SW 已安装完毕、正在等待接管 -> 提示刷新
+      if (reg.waiting && navigator.serviceWorker.controller) {
+        promptUpdate(reg.waiting);
+        return;
+      }
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        if (!sw) return;
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+            promptUpdate(sw);
+          }
+        });
+      });
+    }).catch(() => { /* SW 不可用不影响任何功能 */ });
+
+    // 接管完成后刷新，确保整页运行在新版外壳上
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshing) return;
+      refreshing = true;
+      location.reload();
+    });
+  }
+
+  function promptUpdate(worker) {
+    const node = document.createElement('div');
+    node.className = 'toast long';
+    node.style.cursor = 'pointer';
+    node.textContent = '有新版本可用，点此更新';
+    node.addEventListener('click', () => {
+      node.remove();
+      worker.postMessage('SKIP_WAITING');
+    });
+    el.toastHost.appendChild(node);
+    // 不自动消失，一直等用户点
   }
 
   function setStatus(node, text, kind = 'busy') {
@@ -2721,6 +2772,7 @@
 
   (async function boot() {
     renderDate();
+    setupServiceWorker();
 
     if (FORCE_DEMO) {
       state.demo = true;

@@ -14,11 +14,14 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, extname } from 'node:path';
+import { join, dirname, extname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRY = 'src/index.js';
+
+/** 二进制资源（base64 解码后必须以 Uint8Array 返回，过一道 UTF-8 会损坏文件） */
+const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.ico', '.woff2', '.mp3']);
 
 /** 依赖顺序：被依赖的排在前面 */
 const MODULES = [
@@ -155,20 +158,45 @@ for (const { name } of namespaces) {
 }
 
 /* ------------------------------------------------------------------ *
- * 4. 收集 public/ 静态资源并 base64 内联
+ * 4. 收集 public/ 静态资源并 base64 内联（递归，含 icons/ 子目录）
  * ------------------------------------------------------------------ */
 const PUBLIC_DIR = join(ROOT, 'public');
 const assetMap = {};
 
-for (const name of readdirSync(PUBLIC_DIR).sort()) {
-  const full = join(PUBLIC_DIR, name);
-  if (!statSync(full).isFile()) continue;
-  if (name.startsWith('.')) continue;
-  const type = MIME[extname(name).toLowerCase()] || 'application/octet-stream';
-  assetMap[`/${name}`] = { type, body: readFileSync(full).toString('base64') };
+function collectAssets(dir) {
+  for (const name of readdirSync(dir).sort()) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) {
+      collectAssets(full);
+      continue;
+    }
+    if (name.startsWith('.')) continue;
+    const rel = `/${relative(PUBLIC_DIR, full).split(/[\\/]/).join('/')}`;
+    const ext = extname(name).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+
+    if (ext === '.js' || rel === '/sw.js') {
+      // JS 一律按文本读取（不允许 BOM/编码意外）——sw.js 的版本号直接写在源文件里
+      const source = readFileSync(full, 'utf8');
+      assetMap[rel] = { type, binary: false, body: Buffer.from(source, 'utf8').toString('base64') };
+    } else {
+      const buf = readFileSync(full);
+      assetMap[rel] = {
+        type,
+        binary: BINARY_EXT.has(ext),
+        body: buf.toString('base64'),
+      };
+    }
+  }
 }
 
+collectAssets(PUBLIC_DIR);
+
 if (!assetMap['/index.html']) fail('public/index.html 不存在，无法生成可直接访问的站点');
+if (!assetMap['/sw.js']) fail('public/sw.js 不存在（PWA 需要它，Git 部署同样会用到）');
+if (!assetMap['/icons/icon-192.png'] || !assetMap['/icons/icon-512.png']) {
+  fail('缺少 PNG 图标：请先执行 python scripts/gen-icons.py');
+}
 
 const assetBytes = Object.values(assetMap).reduce((sum, a) => sum + a.body.length, 0);
 
@@ -231,6 +259,7 @@ function emitAssets(map, indent = '') {
   for (const [path, entry] of Object.entries(map)) {
     lines.push(`${indent}  ${JSON.stringify(path)}: {`);
     lines.push(`${indent}    type: ${JSON.stringify(entry.type)},`);
+    lines.push(`${indent}    binary: ${entry.binary ? 'true' : 'false'},`);
     lines.push(`${indent}    body:`);
     const chunks = entry.body.match(/.{1,100}/g) || [''];
     chunks.forEach((chunk, i) => {

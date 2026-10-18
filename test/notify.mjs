@@ -197,6 +197,33 @@ test('演示模式用的 public/notify-channels.json 与后端定义一致（Git
   }
 });
 
+test('PWA 版本号三处一致：app.js APP_VERSION、sw.js CACHE_VERSION、index.html ?v= 参数', () => {
+  const appJs = readFileSync(join(ROOT, 'public/app.js'), 'utf8');
+  const swJs = readFileSync(join(ROOT, 'public/sw.js'), 'utf8');
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+
+  const appVersion = appJs.match(/const APP_VERSION = '([^']+)'/)?.[1];
+  const cacheVersion = swJs.match(/const CACHE_VERSION = '([^']+)'/)?.[1];
+  assert.ok(appVersion, 'app.js 里找不到 APP_VERSION');
+  assert.ok(cacheVersion, 'sw.js 里找不到 CACHE_VERSION');
+  assert.equal(cacheVersion, appVersion, 'sw.js CACHE_VERSION 必须与 app.js APP_VERSION 一致（发新版要一起改，否则用户卡在旧缓存）');
+
+  // index.html 的静态引用都带 ?v= 参数，且等于当前版本（防新旧 app.js/style.css 混用）
+  for (const m of html.matchAll(/(?:app|style)\.(?:js|css)\?v=([\w.-]+)/g)) {
+    assert.equal(m[1], appVersion, `index.html 引用 ${m[0]} 的版本参数与 APP_VERSION 不一致`);
+  }
+  assert.ok(html.includes(`app.js?v=${appVersion}`), 'index.html 未引用带版本号的 app.js');
+  // SW 注册在 app.js 里
+  assert.match(appJs, /serviceWorker\.register\('\.\/sw\.js'\)/, 'app.js 应注册 ./sw.js');
+  // manifest 引用 PNG 图标
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'public/manifest.webmanifest'), 'utf8'));
+  assert.ok(
+    manifest.icons.some((i) => i.src.endsWith('icon-192.png')) && manifest.icons.some((i) => i.src.endsWith('icon-512.png')),
+    'manifest 缺少 192/512 PNG 图标（Chrome 安装提示必需）',
+  );
+  assert.ok(html.includes('apple-touch-180.png'), 'index.html 缺少 PNG apple-touch-icon（iOS 不支持 SVG 图标）');
+});
+
 test('每个渠道都提供中文名与字段说明，设置页才能渲染表单', () => {
   for (const c of CHANNELS) {
     for (const f of CHANNEL_FIELDS[c].fields) {
