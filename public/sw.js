@@ -10,13 +10,12 @@
  * 就会清掉旧缓存，客户端拿到新外壳。
  */
 
-const CACHE_VERSION = '1.2.4';
+const CACHE_VERSION = '1.2.5';
 const CACHE_NAME = `todo-today-shell-${CACHE_VERSION}`;
 
 /* 外壳资源：相对路径，部署在子路径下也能用 */
 const SHELL_ASSETS = [
   './',
-  './index.html',
   './style.css',
   './app.js',
   './manifest.webmanifest',
@@ -90,10 +89,22 @@ self.addEventListener('fetch', (event) => {
       }
 
       // 外壳资源：缓存优先，后台异步校新（stale-while-revalidate）
+      // 注意：Cloudflare 静态资产会把 /index.html 307 到 /，导航请求
+      // 不允许返回「重定向过的响应」（否则 Chrome 直接 ERR_FAILED），
+      // 所以这里把响应重建一份，抹掉 redirected 标记。
       const fetchAndCache = fetch(event.request)
         .then((res) => {
-          if (res.ok) cache.put(event.request, res.clone());
-          return res;
+          if (!res.ok) return res;
+          const clean =
+            res.redirected && event.request.mode === 'navigate'
+              ? new Response(res.body, {
+                  status: res.status,
+                  statusText: res.statusText,
+                  headers: res.headers,
+                })
+              : res;
+          cache.put(event.request, clean.clone());
+          return clean;
         })
         .catch(() => null);
       if (cached) {
@@ -101,10 +112,10 @@ self.addEventListener('fetch', (event) => {
         return cached;
       }
       const fresh = await fetchAndCache;
-      if (fresh) return fresh;
+      if (fresh && fresh.ok) return fresh;
       // 离线且无缓存：导航请求回退到外壳首页（用户直接打开子路径时）
       if (event.request.mode === 'navigate') {
-        const shell = await cache.match('./index.html');
+        const shell = (await cache.match('./')) || (await cache.match('./index.html'));
         if (shell) return shell;
       }
       return new Response('offline', { status: 503 });

@@ -3,7 +3,7 @@
   "short_name": "待办",
   "description": "极简的每日待办清单，云端同步，支持 R2 / S3 / WebDAV 云备份。",
   "id": "todo-today",
-  "start_url": "./index.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui", "browser"],

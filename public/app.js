@@ -10,7 +10,7 @@
   'use strict';
 
   const API_BASE = '/api';
-  const APP_VERSION = '1.2.4';
+  const APP_VERSION = '1.2.5';
 
   const URL_PARAMS = new URLSearchParams(location.search);
   /** ?demo=1 直接进入演示模式并灌入示例数据，用于无后端时预览界面 */
